@@ -1,0 +1,6 @@
+imsi,imei,owner_name,device_model,status,allowed_slices,notes
+999700000000001,860123456789012,Alice - SecOps,Industrial 5G Gateway v2,ACTIVE,1:000001,Primary SCADA gateway
+999700000000002,860123456789022,Bob - Smart City Logistics,Fleet GPS Tracker,ACTIVE,1:000001;3:000003,Authorized for eMBB and mIoT
+999700000000003,860123456789033,Charlie - Ex-Contractor,Pixel 8 5G,SUSPENDED,1:000001,Revoked access credentials
+999700000000004,860123456789044,Diana - Emergency Services,Ruggedized FirstNet Terminal,ACTIVE,1:000001;2:000002,Authorized for URLLC Emergency Slice
+999700000000005,860123456789055,Evan - Enterprise IT,Corporate ThinkPad 5G WWAN,ACTIVE,1:000001;4:010203,Authorized for Enterprise Private Slice

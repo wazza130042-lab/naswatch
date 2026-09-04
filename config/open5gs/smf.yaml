@@ -1,0 +1,35 @@
+# Open5GS SMF (Session Management Function) Configuration
+logger:
+  file: /var/log/open5gs/smf.log
+  level: info
+
+smf:
+  sbi:
+    server:
+      - address: 127.0.0.4
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+  gtpu:
+    server:
+      - address: 127.0.0.4
+  pfcp:
+    server:
+      - address: 127.0.0.4
+    client:
+      upf:
+        - address: 127.0.0.7
+  subnet:
+    - addr: 10.45.0.1/16
+      dnn: internet
+  info:
+    s_nssai:
+      - sst: 1
+        sd: 000001
+        dnn:
+          - internet
+      - sst: 2
+        sd: 000002
+        dnn:
+          - emergency

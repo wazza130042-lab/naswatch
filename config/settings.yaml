@@ -1,0 +1,74 @@
+# NASWatch IDS Configuration
+app:
+  name: "naswatch"
+  version: "0.1.0"
+  environment: "production"
+  log_level: "INFO"
+  log_format: "json" # json or console
+
+capture:
+  mode: "replay" # "live" or "replay"
+  interface: "any"
+  pcap_file: "data/pcaps/5g_signaling_demo.pcap"
+  bpf_filter: "sctp or port 38412"
+  tshark_path: "/usr/bin/tshark"
+  promiscuous: true
+  packet_count: 0 # 0 means continuous
+
+storage:
+  database_type: "sqlite"
+  sqlite_path: "data/inventory.db"
+  auto_migrate: true
+
+detection:
+  rules:
+    rogue_device:
+      enabled: true
+      severity: "CRITICAL"
+      description: "Captured IMSI not present in authorized inventory"
+    identity_spoofing:
+      enabled: true
+      severity: "HIGH"
+      description: "IMSI matches inventory, but IMEI/PEI does not match provisioned hardware"
+    slice_intrusion:
+      enabled: true
+      severity: "MEDIUM"
+      description: "Device connected to a Network Slice (S-NSSAI) not provisioned for this subscriber"
+
+network_slices:
+  authorized_slices:
+    - sst: 1
+      sd: "000001"
+      name: "eMBB-Public"
+      description: "Enhanced Mobile Broadband for standard consumer traffic"
+    - sst: 2
+      sd: "000002"
+      name: "uRLLC-Critical"
+      description: "Ultra-Reliable Low-Latency Communication for emergency services"
+    - sst: 3
+      sd: "000003"
+      name: "mIoT-Sensors"
+      description: "Massive IoT slice for smart city metering"
+    - sst: 4
+      sd: "010203"
+      name: "Enterprise-Private"
+      description: "Isolated enterprise intranet slice"
+
+alerting:
+  channels:
+    console:
+      enabled: true
+    sqlite:
+      enabled: true
+    webhook:
+      enabled: false
+      url: "https://localhost:8443/api/v1/alerts"
+      timeout_seconds: 5
+    syslog:
+      enabled: false
+      host: "127.0.0.1"
+      port: 514
+      facility: "local0"
+    file:
+      enabled: true
+      path: "data/alerts.jsonl"
