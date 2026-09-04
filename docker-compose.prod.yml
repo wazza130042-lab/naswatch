@@ -1,0 +1,133 @@
+# NASWatch — Full Production Stack
+# Includes: PostgreSQL, Redis, Prometheus, Grafana, API, UI
+# Usage: docker-compose -f docker-compose.prod.yml up -d --build
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: naswatch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: naswatch
+      POSTGRES_USER: naswatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U naswatch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - naswatch_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: naswatch-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-change-me-in-production}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - naswatch_net
+
+  naswatch-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naswatch-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - NASWATCH_DB_URL=postgresql://naswatch:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/naswatch
+      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:-change-me-in-production}
+      - NASWATCH_LICENSE_KEY=${NASWATCH_LICENSE_KEY:-}
+      - PAGERDUTY_INTEGRATION_KEY=${PAGERDUTY_INTEGRATION_KEY:-}
+      - SPLUNK_HEC_URL=${SPLUNK_HEC_URL:-}
+      - SPLUNK_HEC_TOKEN=${SPLUNK_HEC_TOKEN:-}
+      - SENTINEL_WORKSPACE_ID=${SENTINEL_WORKSPACE_ID:-}
+      - SENTINEL_SHARED_KEY=${SENTINEL_SHARED_KEY:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-in-production}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    command: uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000 --workers 4
+    networks:
+      - naswatch_net
+
+  naswatch-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naswatch-ui
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - NASWATCH_API_URL=http://naswatch-api:8000
+      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:-change-me-in-production}
+    depends_on:
+      - naswatch-api
+    command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
+    networks:
+      - naswatch_net
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: naswatch-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+    networks:
+      - naswatch_net
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: naswatch-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-me-in-production}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - naswatch_net
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  naswatch_net:
+    driver: bridge

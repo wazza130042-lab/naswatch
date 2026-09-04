@@ -58,20 +58,33 @@ def test_soar_engine_revocation_and_report():
 
 
 def test_fastapi_rest_endpoints():
-    """Test FastAPI /health, /metrics, /api/v1/devices, /api/v1/ingest/event."""
+    """Test FastAPI /health, /metrics, /api/v1/auth/login, /api/v1/devices, /api/v1/ingest/event."""
     client = TestClient(app)
 
-    # Health
+    # Health (public)
     r_health = client.get("/health")
     assert r_health.status_code == 200
     assert r_health.json()["status"] == "healthy"
 
-    # Prometheus Metrics
+    # Prometheus Metrics (public)
     r_metrics = client.get("/metrics")
     assert r_metrics.status_code == 200
     assert "naswatch_packets_inspected_total" in r_metrics.text
 
-    # Provision Device via API
+    # Unauthenticated request should return 401
+    r_unauth = client.post("/api/v1/devices", json={})
+    assert r_unauth.status_code == 401
+
+    # Login to get JWT Bearer token
+    r_login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin@naswatch.io", "password": "naswatch-admin-password"},
+    )
+    assert r_login.status_code == 200
+    token = r_login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Provision Device via API with Bearer token
     dev_payload = {
         "imsi": "999700000000888",
         "imei": "860123456789888",
@@ -80,11 +93,11 @@ def test_fastapi_rest_endpoints():
         "status": "ACTIVE",
         "allowed_slices": [{"sst": 1, "sd": "000001"}],
     }
-    r_add = client.post("/api/v1/devices", json=dev_payload)
-    assert r_add.status_code == 200
+    r_add = client.post("/api/v1/devices", json=dev_payload, headers=headers)
+    assert r_add.status_code == 201
     assert r_add.json()["success"] is True
 
-    # Ingest Telemetry Event via API
+    # Ingest Telemetry Event via API with Bearer token
     ingest_payload = {
         "imsi": "999700000000888",
         "imei": "860123456789888",
@@ -92,7 +105,7 @@ def test_fastapi_rest_endpoints():
         "requested_sd": "000002",
         "cell_id": "0x000000010",
     }
-    r_ingest = client.post("/api/v1/ingest/event", json=ingest_payload)
+    r_ingest = client.post("/api/v1/ingest/event", json=ingest_payload, headers=headers)
     assert r_ingest.status_code == 200
     res = r_ingest.json()
     assert res["alerts_count"] >= 1

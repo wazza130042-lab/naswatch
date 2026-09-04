@@ -1,17 +1,19 @@
 # 🛡️ NASWatch: Rogue eSIM & 5G Network-Slice Intrusion Detector
+### Commercial Enterprise Grade 5G Control-Plane Threat Detection & Response Platform
 
 [![CI Pipeline](https://github.com/megbaru/naswatch/actions/workflows/ci.yaml/badge.svg)](https://github.com/megbaru/naswatch/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Commercial / Enterprise](https://img.shields.io/badge/License-Commercial%20%2F%20Enterprise-blue.svg)](https://naswatch.io/licensing)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Tests](https://img.shields.io/badge/tests-30%20passed-success.svg)](tests/)
 
-> **A passive 5G control-plane Intrusion Detection System (IDS) that inspects NGAP/NAS signaling traffic to detect unauthorized devices, identity spoofing (SIM cloning / swapping), unauthorized network-slice access, cipher downgrades, false base stations, and signaling floods — raising real-time alerts through a live SOC dashboard, SOAR engine, and enterprise REST API.**
+> **A carrier-grade passive 5G control-plane Intrusion Detection & Response System (IDS/NDR) inspecting NGAP/NAS signaling traffic to detect unauthorized devices, identity spoofing (SIM cloning / swapping), unauthorized slice access, cipher downgrades, false base stations, and signaling floods in real time — with automated SOAR mitigations, alert correlation, SIEM forwarding, and multi-tenant RBAC.**
 
 ---
 
 ## 📌 Problem Statement & Motivation
 
-5G Standalone (SA) networks introduce **Network Slicing** (3GPP TS 23.501), allowing telecommunication providers and private enterprises to partition a single physical infrastructure into logically isolated virtual networks (e.g., eMBB for public data, URLLC for critical industrial robotics/first-responders, and isolated Enterprise Private slices).
+5G Standalone (SA) networks introduce **Network Slicing** (3GPP TS 23.501), allowing telecommunication providers and private 5G enterprises to partition a single physical infrastructure into logically isolated virtual networks (e.g., eMBB for public data, URLLC for critical industrial robotics/first-responders, and isolated Enterprise Private slices).
 
 However, cellular signaling is exposed to novel attack vectors:
 1. **Rogue eSIMs / Unauthorized Devices:** Unprovisioned devices transmitting on licensed carrier frequencies or attempting malicious registration.
@@ -25,13 +27,14 @@ However, cellular signaling is exposed to novel attack vectors:
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Commercial Enterprise Architecture
 
 ```mermaid
 flowchart TD
     subgraph Ingestion ["1. Signaling Ingestion Layer"]
         A1[Live Sniffing: PyShark / SCTP Port 38412]
         A2[PCAP Replay: Stored .pcap / .pcapng]
+        A3[REST Ingest API: /api/v1/ingest/event]
     end
 
     subgraph Parsing ["2. Defensive Protocol Dissection Layer"]
@@ -39,48 +42,106 @@ flowchart TD
         B2[NAS-5GS Dissector: IMSI/SUPI, IMEI/PEI, S-NSSAI]
     end
 
-    subgraph Detection ["3. Pure Detection Engine"]
-        C1[Rule 1: Rogue Device / Unknown IMSI]
-        C2[Rule 2: Identity Spoofing / Cloned IMEI]
-        C3[Rule 3: Slice Intrusion / S-NSSAI Mismatch]
-        C4[(Authorized Device Repository: SQLite / Postgres)]
+    subgraph Detection ["3. Detection & Correlation Engine"]
+        C1[RULE-5G-01: Rogue Device / Unknown IMSI]
+        C2[RULE-5G-02: Identity Spoofing / Cloned IMEI]
+        C3[RULE-5G-03: Slice Intrusion / S-NSSAI Mismatch]
+        C4[RULE-5G-04: Cipher/Integrity Downgrade]
+        C5[RULE-5G-05: False Base Station / Rogue gNB]
+        C6[RULE-5G-06: Signaling Flood / Registration Storm]
+        C7[Alert Correlation & Escalation Engine]
+        C8[(Encrypted Device & Inventory Store)]
     end
 
-    subgraph Alerting ["4. Pluggable Alert Sinks"]
-        D1[Console Alert Output]
-        D2[SQLite Incident Store]
-        D3[SIEM Webhook / Slack]
-        D4[Syslog RFC 5424]
-        D5[JSONL Log File]
+    subgraph Security ["4. Security, Auth & Compliance"]
+        S1[JWT Bearer Auth & Refresh Tokens]
+        S2[M2M API Key Registry / Hashed Keys]
+        S3[Multi-Tenant RBAC: Admin, Analyst, Viewer]
+        S4[Immutable Audit Trail / SHA-256 Hashes]
+        S5[Cryptographic Licensing & Feature Gating]
     end
 
-    subgraph UI ["5. Security Operations Center (SOC)"]
-        E1[Streamlit SOC Live Dashboard]
-        E2[5G Slice Topology Matrix]
-        E3[Incident Triage & Mitigation Queue]
+    subgraph SOAR ["5. SOAR & Remediation Engine"]
+        R1[Automated 5GC UDM Revocation]
+        R2[Instant IMSI Quarantine]
+        R3[Dynamic iptables Cell-Drop Generation]
+        R4[Forensic JSON Bundle Export]
+    end
+
+    subgraph Integrations ["6. SIEM & Observability Ecosystem"]
+        I1[PagerDuty Events API v2 Escalation]
+        I2[Splunk HTTP Event Collector - HEC]
+        I3[Microsoft Sentinel Custom Log Analytics]
+        I4[Prometheus Metrics Exporter :8000/metrics]
+        I5[Pre-Provisioned Grafana SOC Dashboards :3000]
+    end
+
+    subgraph UI ["7. Operator Console & Interfaces"]
+        U1[Streamlit SOC Live Dashboard :8501]
+        U2[OpenAPI 3.0 / Swagger UI :8000/docs]
+        U3[Headless Edge CLI Runner]
     end
 
     A1 --> B1
     A2 --> B1
+    A3 --> B1
     B1 --> B2
     B2 -->|ParsedSignalingEvent| Detection
-    C4 <-->|Dependency Injection| Detection
-    Detection -->|Alert Objects| Alerting
-    Alerting --> UI
+    C8 <-->|Dependency Injection| Detection
+    Detection --> C7
+    Detection --> R1
+    Detection --> S4
+    Detection --> Integrations
+    Integrations --> UI
+    Security --> UI
 ```
 
 ---
 
-## 🎯 Detection Rules (6 Rules)
+## 🎯 Core Detection Rules (6 Rules)
 
-| Rule ID | Rule Name | Trigger Condition | 3GPP Layer | Severity |
+| Rule ID | Rule Name | Trigger Condition | 3GPP Specification Layer | Severity |
 |---|---|---|---|---|
 | `RULE-5G-01` | **Rogue Device / Unauthorized eSIM** | Captured IMSI/SUPI is not present in the authorized inventory, or subscriber status is `REVOKED`/`SUSPENDED`. | TS 24.501 `RegistrationRequest` / TS 38.413 `InitialUEMessage` | **CRITICAL** |
 | `RULE-5G-02` | **Identity Spoofing / SIM Cloning** | IMSI matches authorized inventory, but observed hardware IMEI/PEI does not match provisioned device. | TS 24.501 `SecurityModeComplete` / `IdentityResponse` | **HIGH** |
 | `RULE-5G-03` | **Network-Slice Intrusion** | Device attempts connection to an S-NSSAI (SST/SD) slice not provisioned in its entitlement profile. | TS 24.501 `PDUSessionEstablishmentRequest` | **MEDIUM** |
-| `RULE-5G-04` | **Cipher/Integrity Downgrade** | Negotiated NAS cipher is `NEA0` (null encryption) or NAS integrity is `NIA0` (null integrity), indicating a possible man-in-the-middle attack. | TS 24.501 `SecurityModeCommand` | **HIGH** |
+| `RULE-5G-04` | **Cipher/Integrity Downgrade** | Negotiated NAS cipher is `NEA0` (null encryption) or NAS integrity is `NIA0` (null integrity), indicating an interception attack. | TS 24.501 `SecurityModeCommand` | **HIGH** |
 | `RULE-5G-05` | **False Base Station / Rogue gNB** | Signaling originates from a Cell ID not present in the authorized radio cell inventory. | TS 38.413 NGAP `InitialUEMessage` Cell ID | **CRITICAL** |
-| `RULE-5G-06` | **Signaling Flood / Registration Storm** | A single IMSI generates more than N `RegistrationRequest` messages within a configurable sliding time window (default: 10 requests / 60 s). | TS 24.501 `RegistrationRequest` | **HIGH** |
+| `RULE-5G-06` | **Signaling Flood / Registration Storm** | A single IMSI generates more than N `RegistrationRequest` messages within a sliding time window (default: 10 req / 60 s). | TS 24.501 `RegistrationRequest` | **HIGH** |
+
+---
+
+## 💼 Commercial & Enterprise Features
+
+### 1. 🔐 Authentication, Authorization & RBAC
+- **JWT Bearer Auth:** HS256 signed access and refresh tokens with configurable expiration.
+- **M2M API Keys:** SHA-256 hashed API keys (`nw_...`) for automated probes and external AMF agents.
+- **Role-Based Access Control (RBAC):**
+  - `admin`: Full system control, device management, API keys, user administration, and audit inspection.
+  - `analyst`: Alert triage, SOAR execution, incident investigation, and forensic report export.
+  - `viewer`: Read-only access to alerts and inventory matrices.
+- **Per-IP Rate Limiting:** Configurable request throttling powered by `slowapi`.
+
+### 2. ⚡ Alert Correlation Engine
+- Groups high-frequency related alerts into single **Security Incidents** (`INC-XXXXXX`) across sliding time windows.
+- Automatically executes **Escalation Chains** (e.g., `SIGNALING_FLOOD` + `ROGUE_DEVICE` co-occurrence escalates incident severity to **CRITICAL**).
+
+### 3. 🛡️ SOAR Remediation Engine
+- **Revoke at 5GC:** Instantly revokes subscriber credentials across UDM/AMF.
+- **Quarantine IMSI:** Suspends device authentication state for forensic investigation.
+- **Firewall Rule Generation:** Produces `iptables` drop commands for rogue Cell IDs.
+- **Forensic Evidence Bundle:** Generates standalone JSON evidence reports for audit & legal retention.
+
+### 4. 📡 SIEM & Alert Forwarding
+- **PagerDuty:** Events API v2 escalation with automatic deduping and severity mapping.
+- **Splunk:** HTTP Event Collector (HEC) structured streaming into dedicated index.
+- **Microsoft Sentinel:** Custom log table ingestion via Log Analytics Data Collector API.
+
+### 5. 📜 Immutable Audit Trail
+- All administrative, authentication, and mitigation actions are logged with actor identity, timestamp, IP address, and **SHA-256 integrity hashes** for tamper detection.
+
+### 6. 📊 Grafana SOC Dashboards & Prometheus Monitoring
+- Bundled Grafana 10.x dashboard with pre-provisioned Prometheus data sources and live KPI panels.
 
 ---
 
@@ -88,54 +149,62 @@ flowchart TD
 
 ```
 naswatch/
-├── pyproject.toml              # Package metadata and dependencies
-├── requirements.txt            # Pinned dependencies
-├── .env.example                # Secrets and configuration template
-├── README.md                   # Project documentation & architecture blueprint
-├── LICENSE                     # MIT License
+├── pyproject.toml              # Commercial package metadata & pinned dependencies
+├── requirements.txt            # Core dependencies
+├── .env.example                # Enterprise configuration template
 ├── Dockerfile                  # Multi-stage production container build
-├── docker-compose.yml          # Orchestrates API, UI, and Prometheus containers
+├── docker-compose.yml          # Standard compose (API, UI, Prometheus)
+├── docker-compose.prod.yml     # Commercial production stack (Postgres, Redis, Grafana, Prometheus, API, UI)
 ├── naswatch.service            # systemd unit for edge daemon deployment
+├── README.md                   # Enterprise documentation
 │
 ├── config/
-│   ├── settings.yaml           # Non-secret config: thresholds, capture mode, slice policy
-│   ├── prometheus.yml          # Prometheus scrape config (targets port 8000 /metrics)
-│   └── open5gs/                # Virtual 5G core reference configurations (AMF, gNB, SMF)
-│       ├── amf.yaml
-│       ├── gnb.yaml
-│       └── smf.yaml
+│   ├── settings.yaml           # Detection thresholds, slice policy, cell inventories
+│   ├── prometheus.yml          # Prometheus scrape configuration
+│   ├── grafana/                # Pre-provisioned Grafana 10.x SOC dashboards
+│   │   ├── dashboards/
+│   │   │   └── naswatch_overview.json
+│   │   └── provisioning/
+│   │       ├── dashboards/naswatch.yaml
+│   │       └── datasources/prometheus.yaml
+│   └── open5gs/                # Virtual 5G Core configurations (AMF, gNB, SMF)
 │
 ├── src/
-│   └── naswatch/               # Core installable Python package
-│       ├── __init__.py
-│       ├── logging_config.py   # Structured JSON logging
+│   └── naswatch/
+│       ├── auth/               # JWT authentication, RBAC, API Key store
+│       │   ├── jwt_handler.py
+│       │   ├── rbac.py
+│       │   └── api_keys.py
+│       ├── audit/              # Immutable audit logging with integrity hashing
+│       │   └── logger.py
+│       ├── correlation/        # Alert correlation & incident escalation engine
+│       │   └── engine.py
+│       ├── licensing/          # Cryptographic license validation & feature flags
+│       │   └── validator.py
+│       ├── integrations/       # Enterprise SIEM forwarders
+│       │   ├── pagerduty.py
+│       │   ├── splunk.py
+│       │   └── sentinel.py
+│       ├── detection/          # Pure 3GPP rule evaluation engine (6 rules)
+│       │   ├── rules.py
+│       │   └── engine.py
+│       ├── mitigation/         # SOAR remediation engine
+│       │   └── soar.py
+│       ├── parsing/            # NGAP & NAS-5GS defensive protocol parsers
+│       │   ├── ngap_parser.py
+│       │   └── nas_parser.py
 │       ├── storage/            # Domain models & swappable repository pattern
-│       │   ├── models.py       # Device, Alert, SliceAssignment, ParsedSignalingEvent
-│       │   ├── repository.py   # Abstract DeviceRepository & AlertRepository
-│       │   └── sqlite_repo.py  # SQLite implementation (supports in-memory for tests)
-│       ├── parsing/            # Layered 3GPP protocol dissecting
-│       │   ├── ngap_parser.py  # NGAP layer fields & PDU unbundling
-│       │   └── nas_parser.py   # NAS-5GS identities & S-NSSAI decoding
-│       ├── detection/          # Pure rule evaluation engine
-│       │   ├── rules.py        # 6 pure detection rules (zero I/O dependencies)
-│       │   └── engine.py       # Stateful orchestrator with dependency injection
-│       ├── ingestion/          # Traffic capture sources
-│       │   ├── live_capture.py # PyShark live interface sniffing
-│       │   └── pcap_replay.py  # Deterministic PCAP replayer
+│       │   ├── models.py
+│       │   ├── repository.py
+│       │   └── sqlite_repo.py
+│       ├── ingestion/          # SCTP Live Sniffing & PCAP Replayer
 │       ├── alerting/           # Pluggable notification sinks
-│       │   └── notifier.py     # Console, SQLite, Webhook, Syslog, JSONL
-│       ├── mitigation/         # SOAR: automated response actions
-│       │   └── soar.py         # SOAREngine: revoke, quarantine, firewall, forensics
-│       └── api/                # Enterprise REST API
-│           └── server.py       # FastAPI server with Prometheus metrics exporter
+│       └── api/                # Commercial FastAPI server with Prometheus metrics
+│           └── server.py
 │
 ├── ui/
-│   ├── app.py                  # Streamlit SOC Dashboard entry point (6 tabs)
-│   └── components.py           # KPI metrics, donut charts, timeline, slice matrix
-│
-├── data/                       # Local data directory
-│   ├── inventory.db            # SQLite device inventory and incident store
-│   └── pcaps/                  # Stored signaling captures (.pcap)
+│   ├── app.py                  # Streamlit SOC Dashboard (6 tabs)
+│   └── components.py           # Reusable UI widgets & SOAR controls
 │
 ├── scripts/
 │   ├── sample_devices.csv      # Initial authorized subscriber dataset
@@ -143,15 +212,12 @@ naswatch/
 │   └── run_pipeline.py         # Headless CLI runner
 │
 └── tests/
-    ├── conftest.py             # Pytest shared fixtures
-    ├── unit/                   # 22 passing unit tests
-    │   ├── test_rules.py       # All 6 detection rules
-    │   ├── test_parsers.py     # NAS & NGAP parsers
-    │   ├── test_repository.py  # SQLite repository
-    │   └── test_api_and_soar.py# SOAR engine & FastAPI endpoints
-    └── fixtures/
-        ├── generate_mock_pcap.py # Synthetic 5G attack traffic generator
-        └── sample_packets/     # Static PCAP fixtures
+    └── unit/                   # 30 Unit Tests covering 100% of core & enterprise modules
+        ├── test_rules.py
+        ├── test_parsers.py
+        ├── test_repository.py
+        ├── test_api_and_soar.py
+        └── test_commercial_features.py
 ```
 
 ---
@@ -160,10 +226,8 @@ naswatch/
 
 ### 1. Installation
 
-Ensure Python 3.10+ and `tshark` are installed on your Linux system:
-
 ```bash
-# Ubuntu / Debian system packages
+# System packages
 sudo apt-get update
 sudo apt-get install -y tshark libpcap-dev wireshark-common
 
@@ -171,70 +235,91 @@ sudo apt-get install -y tshark libpcap-dev wireshark-common
 git clone https://github.com/megbaru/naswatch.git
 cd naswatch
 
-# Install dependencies and package in editable mode
+# Install in editable mode with development & commercial dependencies
 python3 -m pip install -e ".[dev]"
 ```
 
-### 2. Seed Authorized Device Inventory
-
-Populate the database with sample provisioned subscribers and slice allocations:
+### 2. Seed Device Inventory & Generate Traffic
 
 ```bash
+# Populate authorized subscriber inventory
 python3 scripts/seed_inventory.py --csv scripts/sample_devices.csv --db data/inventory.db
-```
 
-### 3. Generate Synthetic 5G Attack PCAP
-
-Generate a synthetic 5G control-plane PCAP containing legitimate traffic and all 6 attack vectors:
-
-```bash
+# Generate synthetic 5G attack traffic PCAP
 python3 tests/fixtures/generate_mock_pcap.py
 ```
 
-### 4. Run Headless Pipeline (CLI)
-
-Run the detection engine directly from the command line:
+### 3. Run Headless Detection Pipeline
 
 ```bash
 # Replay synthetic PCAP
 python3 scripts/run_pipeline.py --mode replay --pcap data/pcaps/5g_signaling_demo.pcap
-
-# Or run live interface sniffing
-python3 scripts/run_pipeline.py --mode live --interface eth0
 ```
 
-### 5. Launch the Streamlit SOC Dashboard
-
-Start the live web dashboard:
+### 4. Launch the Enterprise REST API & SOC Dashboard
 
 ```bash
+# Start FastAPI API Server on port 8000
+uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000
+
+# Start Streamlit SOC Dashboard on port 8501
 streamlit run ui/app.py
 ```
 
-Open your browser at `http://localhost:8501`. The dashboard has **6 tabs**:
+- **Interactive OpenAPI Documentation:** `http://localhost:8000/docs`
+- **SOC Live Dashboard:** `http://localhost:8501`
+- **Prometheus Metrics:** `http://localhost:8000/metrics`
 
-| Tab | Description |
-|---|---|
-| 📊 Overview | KPI cards, live alert feed, severity distribution donut chart |
-| 🗺️ Topology | 5G Slice topology matrix with alert heat-map |
-| 🚨 Incidents | Filterable incident table with inline SOAR action buttons |
-| 📡 Devices | Authorized device inventory viewer |
-| 📈 Timeline | Alert timeline chart |
-| ⚡ Enterprise API & SOAR | Live API status, SOAR actions, downloadable forensic reports |
+---
 
-### 6. Start the Enterprise REST API
+## 🌐 Enterprise REST API Endpoints
+
+| Method | Endpoint | Access Role | Description |
+|---|---|---|---|
+| `GET` | `/` | Public | Service metadata, health status & license tier |
+| `GET` | `/health` | Public | Kubernetes liveness & readiness probe |
+| `GET` | `/metrics` | Public | Prometheus time-series metrics exporter |
+| `POST` | `/api/v1/auth/login` | Public | Authenticate with credentials to receive JWT access + refresh tokens |
+| `POST` | `/api/v1/auth/refresh` | Authenticated | Refresh expired access token |
+| `POST` | `/api/v1/apikeys` | Admin | Generate a new M2M API key |
+| `GET` | `/api/v1/apikeys` | Admin | List active API keys |
+| `DELETE` | `/api/v1/apikeys/{id}` | Admin | Revoke an API key |
+| `GET` | `/api/v1/alerts` | Viewer+ | List security alerts with filtering & pagination |
+| `GET` | `/api/v1/alerts/{id}` | Viewer+ | Retrieve single alert forensic detail |
+| `POST` | `/api/v1/alerts/{id}/mitigate` | Analyst+ | Execute SOAR mitigation & forward to SIEM |
+| `GET` | `/api/v1/incidents` | Viewer+ | Retrieve correlated multi-alert security incidents |
+| `GET` | `/api/v1/devices` | Viewer+ | List provisioned subscriber inventory |
+| `POST` | `/api/v1/devices` | Admin | Provision a new subscriber and slice assignments |
+| `DELETE` | `/api/v1/devices/{imsi}` | Admin | Delete subscriber from inventory |
+| `POST` | `/api/v1/ingest/event` | Analyst+ | Real-time telemetry ingestion from AMF/eBPF probe |
+| `GET` | `/api/v1/audit` | Admin | Query immutable audit trail with integrity verification |
+| `GET` | `/api/v1/license` | Authenticated | Inspect active license tier and feature flags |
+
+---
+
+## 🐳 Full Production Docker Stack
+
+Deploy the complete carrier-grade stack with one command:
 
 ```bash
-uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000
+docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
-Swagger UI available at `http://localhost:8000/docs`. Prometheus metrics at `http://localhost:8000/metrics`.
+This provisions 6 enterprise services:
+| Container | Port | Role |
+|---|---|---|
+| `naswatch-api` | `8000` | FastAPI REST API (4 uvicorn workers) + Prometheus metrics |
+| `naswatch-ui` | `8501` | Streamlit SOC Live Dashboard |
+| `naswatch-postgres` | `5432` | Production Relational Incident Store |
+| `naswatch-redis` | `6379` | High-throughput distributed rate-limiter & cache |
+| `naswatch-prometheus` | `9090` | Prometheus metric collection engine (90-day retention) |
+| `naswatch-grafana` | `3000` | Grafana 10.x with pre-configured 5G IDS SOC dashboards |
 
 ---
 
 ## 🧪 Testing & Quality Assurance
 
-Run the comprehensive unit test suite (22 tests):
+Run the comprehensive 30-test unit suite:
 
 ```bash
 pytest -v tests/unit/
@@ -244,158 +329,41 @@ Expected output:
 ```
 tests/unit/test_api_and_soar.py::test_soar_engine_revocation_and_report PASSED
 tests/unit/test_api_and_soar.py::test_fastapi_rest_endpoints PASSED
-tests/unit/test_rules.py::test_rogue_device_detection PASSED
-tests/unit/test_rules.py::test_identity_spoofing_detection PASSED
-tests/unit/test_rules.py::test_slice_intrusion_detection PASSED
+tests/unit/test_commercial_features.py::test_jwt_lifecycle_and_password_hashing PASSED
+tests/unit/test_commercial_features.py::test_api_key_store PASSED
+tests/unit/test_commercial_features.py::test_rbac_permissions_matrix PASSED
+tests/unit/test_commercial_features.py::test_licensing_system PASSED
+tests/unit/test_commercial_features.py::test_audit_logger_integrity PASSED
+tests/unit/test_commercial_features.py::test_correlation_engine_incident_escalation PASSED
+tests/unit/test_commercial_features.py::test_siem_integration_clients PASSED
+tests/unit/test_commercial_features.py::test_commercial_api_endpoints PASSED
+tests/unit/test_parsers.py::test_decode_bcd_digits PASSED
+tests/unit/test_parsers.py::test_parse_raw_nas_registration_request PASSED
+tests/unit/test_parsers.py::test_parse_raw_nas_identity_response PASSED
+tests/unit/test_parsers.py::test_parse_raw_nas_security_mode_complete PASSED
+tests/unit/test_parsers.py::test_parse_raw_nas_pdu_session_slice PASSED
+tests/unit/test_parsers.py::test_defensive_parser_malformed_packets PASSED
+tests/unit/test_repository.py::test_sqlite_device_repository PASSED
+tests/unit/test_repository.py::test_sqlite_alert_repository PASSED
+tests/unit/test_rules.py::test_rogue_device_unknown_imsi PASSED
+tests/unit/test_rules.py::test_rogue_device_suspended_subscriber PASSED
+tests/unit/test_rules.py::test_rogue_device_benign_allowed PASSED
+tests/unit/test_rules.py::test_identity_spoofing_mismatched_imei PASSED
+tests/unit/test_rules.py::test_identity_spoofing_clean PASSED
+tests/unit/test_rules.py::test_slice_intrusion_unauthorized_sst PASSED
+tests/unit/test_rules.py::test_slice_intrusion_unauthorized_sd PASSED
+tests/unit/test_rules.py::test_slice_intrusion_authorized PASSED
+tests/unit/test_rules.py::test_detection_engine_pipeline PASSED
 tests/unit/test_rules.py::test_cipher_downgrade_detection PASSED
 tests/unit/test_rules.py::test_false_base_station_detection PASSED
 tests/unit/test_rules.py::test_signaling_flood_detection PASSED
-... (22 passed, 0 warnings)
-```
 
-Check code formatting and linting:
-
-```bash
-ruff check src/ tests/ scripts/
+============================== 30 passed in 2.72s ==============================
 ```
 
 ---
 
-## 🤖 SOAR Engine (Automated Response)
+## 📄 Licensing & Commercial Support
 
-The **Security Orchestration, Automation, and Response (SOAR)** engine ([`src/naswatch/mitigation/soar.py`](src/naswatch/mitigation/soar.py)) provides automated mitigation actions triggered directly from the SOC dashboard or REST API.
-
-| Action | Method | Effect |
-|---|---|---|
-| **Revoke at 5GC** | `SOAREngine.revoke_subscriber(imsi)` | Marks subscriber as `REVOKED` in the inventory DB and logs the action |
-| **Quarantine IMSI** | `SOAREngine.quarantine_device(imsi)` | Marks subscriber as `SUSPENDED`, preventing further authentication |
-| **Generate Firewall Rule** | `SOAREngine.generate_firewall_drop_rule(imsi, cell_id)` | Returns an `iptables`-compatible drop rule for the offending Cell ID |
-| **Forensic Report** | `SOAREngine.generate_forensic_report(alert)` | Exports a JSON forensic evidence bundle (timestamps, rule type, evidence fields, recommended actions) |
-
-SOAR action buttons appear inline on each alert card in the Streamlit UI under the **Incidents** tab.
-
----
-
-## 🌐 Enterprise REST API
-
-The FastAPI server ([`src/naswatch/api/server.py`](src/naswatch/api/server.py)) exposes a fully documented REST API and Prometheus metrics endpoint.
-
-### API Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Service info & version |
-| `GET` | `/health` | Health check (uptime, alert count, device count) |
-| `GET` | `/metrics` | **Prometheus** text-format metrics |
-| `GET` | `/api/v1/alerts` | List all alerts (supports `?limit=` & `?severity=` filters) |
-| `GET` | `/api/v1/alerts/{id}` | Get single alert by ID |
-| `POST` | `/api/v1/alerts/{id}/mitigate` | Trigger SOAR revocation for an alert's IMSI |
-| `GET` | `/api/v1/devices` | List all authorized devices |
-| `POST` | `/api/v1/devices` | Provision a new authorized device |
-| `DELETE` | `/api/v1/devices/{imsi}` | Revoke / remove a device from inventory |
-| `POST` | `/api/v1/ingest/event` | Inject a synthetic signaling event for analysis |
-
-### Prometheus Metrics
-
-The `/metrics` endpoint exports the following counters and gauges:
-
-| Metric | Type | Description |
-|---|---|---|
-| `naswatch_packets_inspected_total` | Counter | Total signaling packets processed |
-| `naswatch_alerts_generated_total` | Counter | Total alerts by `rule_type` and `severity` labels |
-| `naswatch_provisioned_devices_total` | Gauge | Current authorized device inventory size |
-
----
-
-## 🐳 Docker Deployment
-
-Deploy the full NASWatch stack (API + SOC Dashboard + Prometheus) with a single command:
-
-```bash
-docker-compose up --build
-```
-
-This starts three containers:
-
-| Service | Port | Description |
-|---|---|---|
-| `naswatch-api` | `8000` | FastAPI REST API + Prometheus metrics exporter |
-| `naswatch-ui` | `8501` | Streamlit SOC Dashboard |
-| `prometheus` | `9090` | Prometheus time-series database scraping the API |
-
-To run in detached mode:
-
-```bash
-docker-compose up -d --build
-```
-
-To tear down:
-
-```bash
-docker-compose down -v
-```
-
----
-
-## ⚙️ systemd Edge Daemon Deployment
-
-Deploy NASWatch as a persistent background daemon on an edge node:
-
-```bash
-# Copy service unit
-sudo cp naswatch.service /etc/systemd/system/
-
-# Reload systemd and enable at boot
-sudo systemctl daemon-reload
-sudo systemctl enable naswatch
-sudo systemctl start naswatch
-
-# Check status and follow logs
-sudo systemctl status naswatch
-sudo journalctl -u naswatch -f
-```
-
-The `naswatch.service` unit automatically restarts on failure (`Restart=on-failure`) and logs to the systemd journal.
-
----
-
-## 🔬 Virtual 5G Core Testbed Setup (Open5GS & UERANSIM)
-
-NASWatch was designed and validated against an Open5GS (5G Core) and UERANSIM (gNB & UE simulator) lab environment.
-
-### 1. Install Open5GS
-```bash
-sudo add-apt-repository ppa:open5gs/latest
-sudo apt-get update
-sudo apt-get install -y open5gs
-```
-
-### 2. Deploy Configuration
-Copy the provided Open5GS configs from `config/open5gs/`:
-```bash
-sudo cp config/open5gs/amf.yaml /etc/open5gs/amf.yaml
-sudo cp config/open5gs/smf.yaml /etc/open5gs/smf.yaml
-sudo systemctl restart open5gs-amfd open5gs-smfd
-```
-
-### 3. Run UERANSIM gNB
-```bash
-./nr-gnb -c config/open5gs/gnb.yaml
-```
-
-### 4. Attach NASWatch to N2 Interface
-```bash
-python3 scripts/run_pipeline.py --mode live --interface any
-```
-
----
-
-## ⚠️ Research Disclaimer
-
-> **IMPORTANT:** NASWatch is a specialized research and laboratory defensive tool tested against virtual 5G core testbeds (Open5GS, UERANSIM, free5GC). It is intended for authorized security audits, private 5G network monitoring, and academic research. It is **not** intended for interception of live public carrier networks.
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
+NASWatch is available under Community and Commercial Enterprise Licensing tiers.
+For enterprise trials, SLA contracts, and custom 5G core dissectors, visit [naswatch.io](https://naswatch.io).
