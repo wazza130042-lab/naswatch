@@ -24,6 +24,9 @@ class AlertRuleType(str, Enum):
     ROGUE_DEVICE = "ROGUE_DEVICE"
     IDENTITY_SPOOFING = "IDENTITY_SPOOFING"
     SLICE_INTRUSION = "SLICE_INTRUSION"
+    CIPHER_DOWNGRADE = "CIPHER_DOWNGRADE"
+    SIGNALING_FLOOD = "SIGNALING_FLOOD"
+    FALSE_BASE_STATION = "FALSE_BASE_STATION"
 
 
 class DeviceStatus(str, Enum):
@@ -101,6 +104,8 @@ class ParsedSignalingEvent:
     requested_sd: str | None = None
     cell_id: str | None = None
     tac: int | None = None
+    cipher_algo: str | None = None  # e.g., NEA0 (Null), NEA1, NEA2, NEA3
+    integrity_algo: str | None = None  # e.g., NIA0 (Null), NIA1, NIA2, NIA3
     raw_payload_hex: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

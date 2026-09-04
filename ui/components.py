@@ -192,12 +192,12 @@ def render_network_slice_matrix(alerts: list[Alert], devices: list[Device]) -> N
             )
 
 
-def render_alert_item(alert: Alert, repo) -> None:
-    """Render an individual expandable incident card with actionable mitigation controls."""
+def render_alert_item(alert: Alert, repo, soar=None) -> None:
+    """Render an individual expandable incident card with actionable mitigation controls and SOAR integration."""
     header_label = f"[{alert.severity.value}] {alert.rule_type.value} | IMSI: {alert.imsi or 'N/A'} - {alert.title}"
 
     with st.expander(header_label, expanded=(alert.severity.value == "CRITICAL")):
-        col1, col2 = st.columns([3, 1])
+        col1, col2 = st.columns([3, 2])
         with col1:
             st.markdown(f"**Description:** {alert.description}")
             st.markdown(
@@ -212,17 +212,44 @@ def render_alert_item(alert: Alert, repo) -> None:
                 st.json(alert.raw_event)
 
         with col2:
-            st.markdown("**Incident Response**")
+            st.markdown("🎯 **Active SOAR Containment**")
+            c_act1, c_act2 = st.columns(2)
+            with c_act1:
+                if alert.imsi and st.button("🚫 Revoke at 5GC", key=f"btn_revoke_{alert.id}", use_container_width=True):
+                    if soar:
+                        res = soar.revoke_subscriber(alert.imsi, reason=f"Incident {alert.title}")
+                        repo.update_mitigation_status(alert.id, "BLOCKED")
+                        st.success(res.get("message", "Revoked in 5G Core"))
+                        st.rerun()
+            with c_act2:
+                if alert.imsi and st.button("⏸️ Quarantine IMSI", key=f"btn_quarantine_{alert.id}", use_container_width=True):
+                    if soar:
+                        res = soar.quarantine_device(alert.imsi)
+                        repo.update_mitigation_status(alert.id, "INVESTIGATING")
+                        st.info(res.get("message", "Device quarantined"))
+                        st.rerun()
+
             current_status = alert.mitigation_status
             action = st.selectbox(
-                "Update Status",
+                "Triage Status",
                 ["NEW", "INVESTIGATING", "BLOCKED", "RESOLVED"],
                 index=["NEW", "INVESTIGATING", "BLOCKED", "RESOLVED"].index(current_status)
                 if current_status in ["NEW", "INVESTIGATING", "BLOCKED", "RESOLVED"]
                 else 0,
                 key=f"status_select_{alert.id}",
             )
-            if st.button("Apply Mitigation", key=f"btn_apply_{alert.id}"):
+            if st.button("Apply Status", key=f"btn_apply_{alert.id}", use_container_width=True):
                 repo.update_mitigation_status(alert.id, action)
                 st.success(f"Status updated to '{action}'")
                 st.rerun()
+
+            if soar:
+                report_md = soar.generate_forensic_report(alert)
+                st.download_button(
+                    label="📄 Download Forensic Report",
+                    data=report_md,
+                    file_name=f"incident_{alert.id[:8]}_report.md",
+                    mime="text/markdown",
+                    key=f"btn_dl_{alert.id}",
+                    use_container_width=True,
+                )

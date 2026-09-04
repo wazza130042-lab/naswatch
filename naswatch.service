@@ -1,0 +1,18 @@
+[Unit]
+Description=NASWatch 5G Control-Plane Intrusion Detection System
+After=network.target network-online.target open5gs-amfd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/megbaru/Documents/naswatch
+ExecStart=/usr/bin/python3 /home/megbaru/Documents/naswatch/scripts/run_pipeline.py --mode live --interface any
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -166,3 +166,83 @@ def detect_slice_intrusion(
         )
 
     return None
+
+
+def detect_cipher_downgrade(
+    event: ParsedSignalingEvent,
+    known_device: Device | None = None,
+) -> Alert | None:
+    """
+    Rule 4: Bidding-Down / Null Ciphering Downgrade Detection
+    Trigger: Signaling session negotiates or requests NEA0 (null ciphering) or NIA0 (null integrity)
+             on a non-emergency slice or connection.
+    Severity: HIGH
+    """
+    is_null_cipher = event.cipher_algo in ("NEA0", "0", "EEA0")
+    is_null_integrity = event.integrity_algo in ("NIA0", "0", "EIA0")
+
+    if is_null_cipher or is_null_integrity:
+        algo_desc = []
+        if is_null_cipher:
+            algo_desc.append("Null Ciphering (NEA0/No Encryption)")
+        if is_null_integrity:
+            algo_desc.append("Null Integrity (NIA0/No MAC Protection)")
+
+        return Alert(
+            rule_type=AlertRuleType.CIPHER_DOWNGRADE,
+            severity=AlertSeverity.HIGH,
+            title="HIGH: 5G Security Algorithm Downgrade / Null Ciphering Exploit",
+            description=(
+                f"Insecure signaling parameters detected from IMSI '{event.imsi or 'Unknown'}'. "
+                f"Negotiated Algorithms: {', '.join(algo_desc)}. "
+                f"Potential Bidding-Down or MitM / IMSI-Catcher activity at Cell '{event.cell_id or 'Unknown'}'."
+            ),
+            imsi=event.imsi,
+            imei=event.imei,
+            cell_id=event.cell_id,
+            target_slice=event.requested_slice_id,
+            raw_event={
+                "packet_num": event.packet_num,
+                "cipher_algo": event.cipher_algo,
+                "integrity_algo": event.integrity_algo,
+                "cell_id": event.cell_id,
+            },
+        )
+
+    return None
+
+
+def detect_false_base_station(
+    event: ParsedSignalingEvent,
+    authorized_cells: list[str] | None = None,
+) -> Alert | None:
+    """
+    Rule 5: False Base Station (Stingray / Rogue gNB / IMSI Catcher) Detection
+    Trigger: Cell ID or TAC reported in signaling traffic does not match the network's authorized gNB inventory.
+    Severity: CRITICAL
+    """
+    if not event.cell_id or authorized_cells is None or len(authorized_cells) == 0:
+        return None
+
+    if event.cell_id not in authorized_cells:
+        return Alert(
+            rule_type=AlertRuleType.FALSE_BASE_STATION,
+            severity=AlertSeverity.CRITICAL,
+            title="CRITICAL: Unauthorized Cell ID / Rogue gNB (IMSI Catcher) Detected",
+            description=(
+                f"Signaling received from unapproved Cell ID '{event.cell_id}' (TAC: {event.tac or 'Unknown'}). "
+                f"Device IMSI '{event.imsi or 'Unknown'}' may be communicating with a False Base Station."
+            ),
+            imsi=event.imsi,
+            imei=event.imei,
+            cell_id=event.cell_id,
+            target_slice=event.requested_slice_id,
+            raw_event={
+                "packet_num": event.packet_num,
+                "cell_id": event.cell_id,
+                "tac": event.tac,
+                "source_ip": event.source_ip,
+            },
+        )
+
+    return None

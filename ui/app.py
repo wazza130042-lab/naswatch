@@ -18,6 +18,7 @@ import streamlit as st
 
 from naswatch.detection.engine import DetectionEngine
 from naswatch.ingestion.pcap_replay import PCAPReplayer
+from naswatch.mitigation.soar import SOAREngine
 from naswatch.storage.models import Device, DeviceStatus
 from naswatch.storage.sqlite_repo import SQLiteRepository
 from scripts.seed_inventory import parse_slices_field, seed_inventory_from_csv
@@ -212,13 +213,16 @@ def main() -> None:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    soar = SOAREngine(device_repo=repo, alert_repo=repo)
+
     # Main Tabs
-    tab_threats, tab_slices, tab_devices, tab_packets, tab_architecture = st.tabs(
+    tab_threats, tab_slices, tab_devices, tab_packets, tab_api, tab_architecture = st.tabs(
         [
             "🚨 Real-Time Threat Alerts",
             "🌐 5G Network-Slice Matrix",
             "📱 Authorized eSIM Inventory",
             "📡 Packet Stream Inspector",
+            "⚡ Enterprise API & SOAR",
             "📖 5G Threat Architecture & Rules",
         ]
     )
@@ -236,7 +240,7 @@ def main() -> None:
             st.info("No security incidents match the active filters. Network traffic is clean.")
         else:
             for alert in filtered_alerts:
-                render_alert_item(alert, repo)
+                render_alert_item(alert, repo, soar=soar)
 
     # Tab 2: 5G Network Slice Matrix
     with tab_slices:
@@ -308,7 +312,39 @@ def main() -> None:
         else:
             st.info("Click 'Replay PCAP Traffic' in the sidebar to run the dissector and inspect packets.")
 
-    # Tab 5: 5G Threat Architecture & Rules Guide
+    # Tab 5: Enterprise REST API & SOAR Control
+    with tab_api:
+        st.subheader("⚡ Enterprise REST API & Prometheus Telemetry")
+
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            st.markdown(
+                """
+                ### 🚀 FastAPI Integration Endpoints
+                NASWatch exposes a high-performance **FastAPI microservice** on port `8000`:
+                - **Interactive OpenAPI Swagger Docs:** [`http://localhost:8000/docs`](http://localhost:8000/docs)
+                - **Health Probe:** `GET /health` (Kubernetes Liveness / Readiness)
+                - **Incident Stream:** `GET /api/v1/alerts` (JSON feed for SIEM / Splunk / Wazuh)
+                - **Automated SOAR Action:** `POST /api/v1/alerts/{id}/mitigate`
+                - **Subscriber Inventory:** `GET /api/v1/devices` & `POST /api/v1/devices`
+                - **Direct Ingestion:** `POST /api/v1/ingest/event` (AMF eBPF Sidecar Probe)
+                """
+            )
+            st.code("uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000", language="bash")
+
+        with col_a2:
+            st.markdown(
+                """
+                ### 📊 Prometheus Metrics Exporter
+                Real-time metrics are scraped via standard OpenMetrics format on `/metrics`:
+                - `naswatch_packets_inspected_total`: Rate of NGAP/NAS signaling traffic.
+                - `naswatch_alerts_generated_total{rule_type, severity}`: Incident velocity counters.
+                - `naswatch_provisioned_devices_total`: Current inventory gauge.
+                """
+            )
+            st.code("curl -s http://localhost:8000/metrics | head -n 15", language="bash")
+
+    # Tab 6: 5G Threat Architecture & Rules Guide
     with tab_architecture:
         st.subheader("📖 5G Threat Architecture & Detection Rule Specifications")
         st.markdown(

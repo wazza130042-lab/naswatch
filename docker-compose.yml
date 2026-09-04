@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # 1. NASWatch REST API & Prometheus Exporter
+  naswatch-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naswatch-api
+    command: uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - naswatch-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # 2. NASWatch Streamlit SOC Dashboard
+  naswatch-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naswatch-ui
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - naswatch-data:/app/data
+    depends_on:
+      - naswatch-api
+    restart: unless-stopped
+
+  # 3. Prometheus Monitoring Engine
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: naswatch-prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+volumes:
+  naswatch-data:

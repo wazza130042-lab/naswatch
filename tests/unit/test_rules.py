@@ -160,3 +160,61 @@ def test_detection_engine_pipeline(memory_repo):
     alerts = engine.process_event(slice_event)
     assert len(alerts) == 1
     assert alerts[0].rule_type == AlertRuleType.SLICE_INTRUSION
+
+
+def test_cipher_downgrade_detection():
+    """Rule 4: Detect null ciphering (NEA0) / null integrity (NIA0)."""
+    from naswatch.detection.rules import detect_cipher_downgrade
+
+    event = ParsedSignalingEvent(
+        imsi="999700000000001",
+        cipher_algo="NEA0",
+        integrity_algo="NIA0",
+        cell_id="0x000000010",
+    )
+    alert = detect_cipher_downgrade(event)
+    assert alert is not None
+    assert alert.rule_type == AlertRuleType.CIPHER_DOWNGRADE
+    assert alert.severity == AlertSeverity.HIGH
+
+
+def test_false_base_station_detection():
+    """Rule 5: Detect unapproved Cell ID / Rogue gNB."""
+    from naswatch.detection.rules import detect_false_base_station
+
+    authorized_cells = ["0x000000010", "0x000000020"]
+
+    # Approved cell
+    clean_event = ParsedSignalingEvent(cell_id="0x000000010")
+    assert detect_false_base_station(clean_event, authorized_cells) is None
+
+    # Rogue cell
+    rogue_event = ParsedSignalingEvent(cell_id="0x999999999")
+    alert = detect_false_base_station(rogue_event, authorized_cells)
+    assert alert is not None
+    assert alert.rule_type == AlertRuleType.FALSE_BASE_STATION
+    assert alert.severity == AlertSeverity.CRITICAL
+
+
+def test_signaling_flood_detection(memory_repo):
+    """Rule 6: High frequency signaling storm detection."""
+    engine = DetectionEngine(
+        device_repo=memory_repo,
+        flood_threshold=5,
+        flood_window_seconds=2.0,
+    )
+
+    # Send 6 rapid events for same IMSI
+    alerts = []
+    for _ in range(6):
+        event = ParsedSignalingEvent(
+            imsi="999700000000001",
+            imei="860123456789012",
+            requested_sst=1,
+            requested_sd="000001",
+        )
+        alerts.extend(engine.process_event(event))
+
+    flood_alerts = [a for a in alerts if a.rule_type == AlertRuleType.SIGNALING_FLOOD]
+    assert len(flood_alerts) >= 1
+
