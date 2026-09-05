@@ -1,13 +1,13 @@
 """
-NASWatch UI Components — High-End Cybersecurity SOC Experience
-==============================================================
+NASWatch UI Components — World-Class Cybersecurity SOC Dashboard
+================================================================
 Includes:
-  - Glassmorphic KPI summary cards with glow effects
-  - Interactive 2D Network Slice & Core Topology Node Map
-  - Interactive 3GPP Protocol Tree & Hex Dissect Inspector
-  - Advanced Alert Triage Cards with 1-click SOAR mitigations & firewall script gen
-  - Threat Ingress Timeline & Severity Donut Visualizations
-  - SIEM Forwarding & M2M API Key Generator controls
+  - Glassmorphic KPI Summary Cards with dynamic status glows
+  - Interactive 2D/3D Network Slice & Core Topology Map
+  - Interactive MITRE ATT&CK for 5G Threat Matrix Visualizer
+  - Multi-Vendor Firewall Script Synthesizer (iptables, nftables, ovs-ofctl, Cisco)
+  - Interactive SOAR Containment & Playbook Runner
+  - Threat Trajectory Scatter & Severity Donut Charts
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from naswatch.storage.models import Alert, Device
 
 
 # =============================================================================
-# 1. Glassmorphic Executive KPI Cards
+# 1. Executive Glassmorphic KPI Cards
 # =============================================================================
 def render_kpi_cards(
     total_packets: int,
@@ -101,18 +101,14 @@ def render_kpi_cards(
 # =============================================================================
 def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]) -> None:
     """
-    Renders an interactive 2D node-link topology showing:
+    Renders an interactive node-link topology showing:
       - Radio Cells / gNodeBs
       - 5G Core AMF Ingress Hub
       - Slices (eMBB, uRLLC, mIoT, Enterprise Private)
-      - Devices with normal vs. attack flows
+      - Active threats & breach indicators
     """
     st.markdown("### 🗺️ 5G Network-Slice Live Interactive Topology")
 
-    # Define Node Coordinates
-    # Core AMF at center (0, 0)
-    # Cells on left (-2, -1), (-2, 1)
-    # Slices on right (2, y)
     nodes_x = []
     nodes_y = []
     node_text = []
@@ -154,7 +150,6 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
         sx, sy = s["pos"]
         nodes_x.append(sx)
         nodes_y.append(sy)
-        # Check if slice has intrusions
         slice_id = f"{s['sst']}:{s['sd']}"
         intrusions = [a for a in alerts if a.target_slice == slice_id and a.rule_type.value == "SLICE_INTRUSION"]
         color = "#ef4444" if intrusions else s["color"]
@@ -167,12 +162,10 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
     edge_x = []
     edge_y = []
 
-    # Connect Cells -> AMF
     for cx, cy in cell_positions:
         edge_x.extend([cx, 0, None])
         edge_y.extend([cy, 0, None])
 
-    # Connect AMF -> Slices
     for s in slices_data:
         sx, sy = s["pos"]
         edge_x.extend([0, sx, None])
@@ -180,7 +173,6 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
 
     fig = go.Figure()
 
-    # Add Links
     fig.add_trace(
         go.Scatter(
             x=edge_x,
@@ -191,7 +183,6 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
         )
     )
 
-    # Add Nodes
     fig.add_trace(
         go.Scatter(
             x=nodes_x,
@@ -226,7 +217,142 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
 
 
 # =============================================================================
-# 3. Threat Severity Donut & Hourly Trajectory Timeline
+# 3. MITRE ATT&CK for 5G & Mobile Matrix Coverage Visualizer
+# =============================================================================
+def render_mitre_attack_matrix(alerts: list[Alert]) -> None:
+    """Render interactive MITRE ATT&CK for 5G threat coverage matrix."""
+    st.markdown("### 🎯 MITRE ATT&CK for 5G & Mobile Telecommunications Coverage")
+    st.caption("Real-time mapping of control-plane signaling intrusions to industry-standard adversary tactics & techniques.")
+
+    mitre_tactics = [
+        {
+            "tactic": "Initial Access",
+            "technique_id": "T1461",
+            "technique": "Rogue Base Station / IMSI Catcher",
+            "rule": "FALSE_BASE_STATION",
+            "desc": "Adversary operates unauthorized cellular radio node to intercept registration.",
+            "mitigation": "Cell ID Whitelisting & TAC Integrity Verification",
+        },
+        {
+            "tactic": "Defense Evasion",
+            "technique_id": "T1406",
+            "technique": "SIM Cloning & Identity Spoofing",
+            "rule": "IDENTITY_SPOOFING",
+            "desc": "Transmitting with authorized subscriber credentials on unapproved hardware PEI.",
+            "mitigation": "Hardware Binding & PEI/IMEI Cross-Validation",
+        },
+        {
+            "tactic": "Lateral Movement",
+            "technique_id": "T1437",
+            "technique": "Network-Slice Hopping (S-NSSAI Intrusion)",
+            "rule": "SLICE_INTRUSION",
+            "desc": "Escalating from consumer eMBB slice to critical industrial uRLLC SCADA network.",
+            "mitigation": "Zero-Trust S-NSSAI Subscription Policy Enforcement",
+        },
+        {
+            "tactic": "Credential Access",
+            "technique_id": "T1458",
+            "technique": "Cryptographic Algorithm Downgrade (NEA0/NIA0)",
+            "rule": "CIPHER_DOWNGRADE",
+            "desc": "Manipulating NAS Security Mode to force null encryption and capture plaintext.",
+            "mitigation": "Mandatory AS/NAS Security Policy (Reject NEA0)",
+        },
+        {
+            "tactic": "Impact / DoS",
+            "technique_id": "T1498",
+            "technique": "5GC Signaling Flood & Storm",
+            "rule": "SIGNALING_FLOOD",
+            "desc": "Exhausting AMF authentication queue with high-rate registration storms.",
+            "mitigation": "Stateful Dynamic Rate Limiting & IMSI Quarantine",
+        },
+        {
+            "tactic": "Resource Hijacking",
+            "technique_id": "T1465",
+            "technique": "Rogue eSIM / Unauthorized Spectrum Access",
+            "rule": "ROGUE_DEVICE",
+            "desc": "Unregistered hardware transmitting on licensed carrier bands.",
+            "mitigation": "Instant 5GC UDM Revocation & Edge Drop",
+        },
+    ]
+
+    active_rule_types = {a.rule_type.value for a in alerts}
+
+    cols = st.columns(3)
+    for idx, item in enumerate(mitre_tactics):
+        col_idx = idx % 3
+        with cols[col_idx]:
+            is_active = item["rule"] in active_rule_types
+            card_border = "#ef4444" if is_active else "#334155"
+            card_bg = "rgba(239, 68, 68, 0.12)" if is_active else "#1e293b"
+            status_tag = f"<span class='badge badge-crit'>🚨 ACTIVE ({item['technique_id']})</span>" if is_active else f"<span class='badge badge-blue'>🛡️ MONITORED ({item['technique_id']})</span>"
+
+            st.markdown(
+                f"""
+                <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:10px; padding:16px; margin-bottom:16px; min-height:220px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:11px; font-weight:700; color:#38bdf8; text-transform:uppercase;">{item['tactic']}</span>
+                        {status_tag}
+                    </div>
+                    <h4 style="margin:8px 0 4px 0; color:#f8fafc; font-size:15px;">{item['technique']}</h4>
+                    <p style="font-size:12px; color:#94a3b8; margin:0 0 10px 0;">{item['desc']}</p>
+                    <div style="background:rgba(0,0,0,0.3); padding:8px 10px; border-radius:6px; font-size:11px; color:#cbd5e1;">
+                        <strong>Rule:</strong> <code style="color:#00f2fe;">{item['rule']}</code><br>
+                        <strong>Mitigation:</strong> {item['mitigation']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+# =============================================================================
+# 4. Multi-Vendor Firewall Synthesizer
+# =============================================================================
+def render_firewall_synthesizer(alert: Alert) -> None:
+    """Renders copy-pasteable firewall commands for multiple firewall / SDN vendors."""
+    imsi = alert.imsi or "001010000000001"
+    cell = alert.cell_id or "0x000000010"
+
+    fw_tab1, fw_tab2, fw_tab3, fw_tab4 = st.tabs(["Linux iptables", "Linux nftables", "OpenFlow / OVS", "Cisco ASA / FTD"])
+
+    with fw_tab1:
+        iptables_cmd = (
+            f"# Drop SCTP signaling frames matching IMSI {imsi}\n"
+            f"sudo iptables -I FORWARD -p sctp --dport 38412 -m string --hex-string '{imsi}' --algo bm -j DROP\n"
+            f"sudo iptables -I FORWARD -p sctp --dport 38412 -m string --hex-string '{imsi}' --algo bm -j LOG --log-prefix '[5G-IDS-DROP] '"
+        )
+        st.code(iptables_cmd, language="bash")
+
+    with fw_tab2:
+        nftables_cmd = (
+            f"# Modern nftables kernel rule\n"
+            f"nft add table inet naswatch_filter\n"
+            f"nft add chain inet naswatch_filter forward {{ type filter hook forward priority 0 \\; }}\n"
+            f"nft add rule inet naswatch_filter forward sctp dport 38412 @ih,0,64 0x{imsi[:16]} drop"
+        )
+        st.code(nftables_cmd, language="bash")
+
+    with fw_tab3:
+        ovs_cmd = (
+            f"# Open vSwitch OpenFlow SDN drop rule (5GC NFV Core)\n"
+            f"ovs-ofctl add-flow br-n2 priority=65500,dl_type=0x0800,nw_proto=132,tp_dst=38412,actions=drop\n"
+            f"ovs-ofctl add-flow br-n2 priority=60000,dl_type=0x0800,in_port={cell},actions=drop"
+        )
+        st.code(ovs_cmd, language="bash")
+
+    with fw_tab4:
+        cisco_cmd = (
+            f"! Cisco ASA / Firepower 5G Security Gateway Configuration\n"
+            f"object network ROGUE_SUBSCRIBER_{imsi[:8]}\n"
+            f" host 10.5.0.100\n"
+            f"access-list 5G_N2_INSPECT line 1 extended deny sctp any any eq 38412 log\n"
+            f"access-group 5G_N2_INSPECT in interface N2_AMF"
+        )
+        st.code(cisco_cmd, language="cisco")
+
+
+# =============================================================================
+# 5. Threat Severity Donut & Hourly Trajectory Timeline
 # =============================================================================
 def render_severity_chart(alerts: list[Alert]) -> None:
     """Render custom animated donut chart with Cyber dark theme."""
@@ -291,7 +417,7 @@ def render_threat_timeline(alerts: list[Alert]) -> None:
             <div style="background:#1e293b; padding:24px; border-radius:10px; text-align:center; border:1px solid #334155;">
                 <span style="font-size:32px;">📈</span>
                 <h4 style="margin:8px 0; color:#38bdf8;">Timeline Ready</h4>
-                <p style="color:#94a3b8; font-size:13px; margin:0;">Replay PCAP or start live sniffing to generate trajectory points.</p>
+                <p style="color:#94a3b8; font-size:13px; margin:0;">Replay PCAP or inject attack scenarios to generate trajectory points.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -342,7 +468,7 @@ def render_threat_timeline(alerts: list[Alert]) -> None:
 
 
 # =============================================================================
-# 4. 5G Slice Isolation Matrix Cards
+# 6. 5G Slice Isolation Matrix Cards
 # =============================================================================
 def render_network_slice_matrix(alerts: list[Alert], devices: list[Device]) -> None:
     """Visualizes 5G network slices and active/intruding subscribers."""
@@ -389,14 +515,10 @@ def render_network_slice_matrix(alerts: list[Alert], devices: list[Device]) -> N
 
 
 # =============================================================================
-# 5. Advanced Incident Triage Item with SOAR, Firewall & 3GPP Dissect
+# 7. Advanced Incident Triage Card with SOAR, Multi-FW & 3GPP Dissect
 # =============================================================================
 def render_alert_item(alert: Alert, repo, soar=None) -> None:
-    """Render an individual expandable incident card with actionable mitigation controls, firewall generation, and 3GPP inspection."""
-
-
-
-
+    """Render an individual incident card with actionable SOAR mitigations, firewall script generator, and 3GPP dissection."""
     with st.expander(f"[{alert.severity.value}] {alert.rule_type.value} — {alert.title} (IMSI: {alert.imsi or 'N/A'})", expanded=(alert.severity.value == "CRITICAL")):
         c_left, c_right = st.columns([3, 2])
 
@@ -435,12 +557,9 @@ def render_alert_item(alert: Alert, repo, soar=None) -> None:
                         st.info(res.get("message", "Quarantined"))
                         st.rerun()
 
-            # Dynamic Firewall Rule Dropdown
-            with st.expander("🛡️ Dynamic Firewall Rule Generator", expanded=False):
-                fw_imsi = alert.imsi or "000000000000000"
-                iptables_rule = f"sudo iptables -A FORWARD -m string --hex-string '{fw_imsi}' --algo bm -j DROP"
-                st.code(iptables_rule, language="bash")
-                st.caption("Drop SCTP signaling from rogue identity at edge gateway.")
+            # Multi-Vendor Firewall Synthesizer
+            with st.expander("🛡️ Multi-Vendor Firewall Rules", expanded=False):
+                render_firewall_synthesizer(alert)
 
             # Status Selector
             current_status = alert.mitigation_status
