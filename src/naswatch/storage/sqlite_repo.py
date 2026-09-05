@@ -284,6 +284,10 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
             cur = conn.execute("SELECT COUNT(*) FROM alerts")
             return cur.fetchone()[0]
 
+    def clear_alerts(self) -> None:
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM alerts")
+
     def clear(self) -> None:
         with self._get_connection() as conn:
             conn.execute("DELETE FROM alerts")

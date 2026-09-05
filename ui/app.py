@@ -170,7 +170,7 @@ def main() -> None:
                 st.rerun()
         with col_s2:
             if st.button("🗑️ Clear Alerts", use_container_width=True):
-                repo.clear()
+                repo.clear_alerts()
                 st.session_state.inspected_count = 0
                 st.session_state.last_events = []
                 st.info("Cleared all alerts.")
@@ -185,9 +185,21 @@ def main() -> None:
         )
         selected_rule = st.selectbox(
             "Filter Detection Rule",
-            ["ALL", "ROGUE_DEVICE", "IDENTITY_SPOOFING", "SLICE_INTRUSION"],
+            [
+                "ALL",
+                "ROGUE_DEVICE",
+                "IDENTITY_SPOOFING",
+                "SLICE_INTRUSION",
+                "CIPHER_DOWNGRADE",
+                "FALSE_BASE_STATION",
+                "SIGNALING_FLOOD",
+            ],
             index=0,
         )
+
+        st.divider()
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
 
     # Fetch Data
     devices = repo.list_all(limit=500)
@@ -201,9 +213,16 @@ def main() -> None:
     high_count = sum(1 for a in all_alerts if a.severity.value == "HIGH")
     med_count = sum(1 for a in all_alerts if a.severity.value == "MEDIUM")
 
+    # Determine display packet count
+    effective_packets = (
+        st.session_state.inspected_count
+        if st.session_state.inspected_count > 0
+        else (6 if len(all_alerts) > 0 else 0)
+    )
+
     # Render KPI Cards
     render_kpi_cards(
-        total_packets=st.session_state.inspected_count if st.session_state.inspected_count > 0 else 6,
+        total_packets=effective_packets,
         total_alerts=len(all_alerts),
         critical_count=crit_count,
         high_count=high_count,
