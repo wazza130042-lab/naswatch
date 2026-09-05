@@ -1,6 +1,9 @@
 """
-NASWatch: 5G Control-Plane Intrusion Detection System
-Streamlit Security Operations Center (SOC) Dashboard.
+NASWatch: 5G Control-Plane Intrusion Detection & Response System
+Enterprise Security Operations Center (SOC) Console
+==============================================================
+High-end Cyber SOC Theme, 5G Network-Slice Matrix, Interactive
+Topology, SOAR Response Controls & Commercial API Manager.
 """
 
 from __future__ import annotations
@@ -8,13 +11,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add project root to sys.path so scripts and naswatch packages resolve when run via Streamlit
+# Add project root to sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 
 from naswatch.detection.engine import DetectionEngine
 from naswatch.ingestion.pcap_replay import PCAPReplayer
@@ -24,53 +28,146 @@ from naswatch.storage.sqlite_repo import SQLiteRepository
 from scripts.seed_inventory import parse_slices_field, seed_inventory_from_csv
 from ui.components import (
     render_alert_item,
+    render_interactive_topology_graph,
     render_kpi_cards,
     render_network_slice_matrix,
     render_severity_chart,
     render_threat_timeline,
 )
 
-# Set Streamlit Page Config
+# Optional commercial modules
+try:
+    from naswatch.auth.api_keys import APIKeyStore
+    from naswatch.licensing.validator import validate_license
+    _COMMERCIAL_AVAILABLE = True
+except ImportError:
+    _COMMERCIAL_AVAILABLE = False
+
+
+# Page Configuration
 st.set_page_config(
-    page_title="NASWatch | 5G Control-Plane IDS",
+    page_title="NASWatch SOC | 5G Threat Defense",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Custom Styling (Cybersecurity Dark SOC Theme)
+# High-End Cybersecurity SOC Theme (CSS)
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    
+    code, pre {
+        font-family: 'JetBrains Mono', monospace !important;
+    }
+
     .stApp {
-        background-color: #0f172a;
+        background-color: #090d16;
         color: #f8fafc;
     }
-    .metric-card {
-        background-color: #1e293b;
-        border-radius: 8px;
-        padding: 16px;
-        border: 1px solid #334155;
+
+    /* Glassmorphic Executive Metric Cards */
+    .soc-card {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);
+        backdrop-filter: blur(12px);
+        border-radius: 12px;
+        padding: 18px 20px;
+        border: 1px solid rgba(51, 65, 85, 0.6);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+        transition: transform 0.2s ease, border-color 0.2s ease;
     }
-    div[data-testid="stMetric"] {
-        background-color: #1e293b;
-        border-radius: 8px;
-        padding: 12px;
-        border: 1px solid #334155;
+    .soc-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(56, 189, 248, 0.6);
     }
+    .soc-card-cyan { border-top: 3px solid #00f2fe; }
+    .soc-card-red { border-top: 3px solid #ef4444; }
+    .soc-card-crit { border-top: 3px solid #dc2626; }
+    .soc-card-orange { border-top: 3px solid #f97316; }
+    .soc-card-blue { border-top: 3px solid #3b82f6; }
+
+    .soc-card-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: #94a3b8;
+        margin-bottom: 6px;
+    }
+    .soc-card-value {
+        font-size: 28px;
+        font-weight: 800;
+        line-height: 1.1;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .soc-card-sub {
+        font-size: 11px;
+        color: #64748b;
+        margin-top: 6px;
+        font-weight: 500;
+    }
+
+    .text-cyan { color: #00f2fe; }
+    .text-red { color: #f87171; }
+    .text-orange { color: #fb923c; }
+    .text-green { color: #34d399; }
+    .text-blue { color: #60a5fa; }
+
+    /* Custom Badges */
+    .badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .badge-crit { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid #ef4444; }
+    .badge-orange { background: rgba(249, 115, 22, 0.2); color: #fdba74; border: 1px solid #f97316; }
+    .badge-yellow { background: rgba(234, 179, 8, 0.2); color: #fde047; border: 1px solid #eab308; }
+    .badge-green { background: rgba(16, 185, 129, 0.2); color: #86efac; border: 1px solid #10b981; }
+    .badge-blue { background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid #3b82f6; }
+
+    /* Sleek Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 6px;
+        background-color: rgba(15, 23, 42, 0.6);
+        padding: 6px;
+        border-radius: 10px;
+        border: 1px solid #1e293b;
     }
     .stTabs [data-baseweb="tab"] {
-        background-color: #1e293b;
-        border-radius: 6px;
+        background-color: transparent;
+        border-radius: 8px;
         color: #94a3b8;
-        padding: 8px 16px;
+        padding: 8px 18px;
+        font-weight: 600;
+        font-size: 13px;
+        border: none;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #38bdf8 !important;
-        color: #0f172a !important;
-        font-weight: bold;
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 2px 10px rgba(2, 132, 199, 0.4);
+    }
+
+    /* Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #0b1120;
+        border-right: 1px solid #1e293b;
+    }
+
+    /* Buttons */
+    div.stButton > button:first-child {
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.2s;
     }
     </style>
     """,
@@ -100,17 +197,31 @@ def main() -> None:
         if Path(seed_csv).exists():
             seed_inventory_from_csv(seed_csv, db_path)
 
-    # Header
-    col_title, col_status = st.columns([3, 1])
-    with col_title:
-        st.title("🛡️ NASWatch: 5G Control-Plane IDS")
-        st.caption("Passive NGAP / NAS-5GS Signaling Inspector for Rogue eSIMs & Network-Slice Intrusions")
-    with col_status:
+    # Top Navigation Banner
+    col_logo, col_stat = st.columns([3, 1])
+    with col_logo:
         st.markdown(
             """
-            <div style="text-align: right; padding-top: 15px;">
-                <span style="background-color: #065f46; color: #34d399; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 13px;">
-                    ● ACTIVE MONITORING
+            <div style="display:flex; align-items:center; gap:14px; margin-bottom: 4px;">
+                <div style="background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%); width:42px; height:42px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:22px; box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);">
+                    🛡️
+                </div>
+                <div>
+                    <h2 style="margin:0; font-size:24px; font-weight:800; letter-spacing:-0.02em; background: linear-gradient(90deg, #f8fafc, #94a3b8); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
+                        NASWatch <span style="font-size:14px; font-weight:700; color:#00f2fe; -webkit-text-fill-color:#00f2fe; background:rgba(0,242,254,0.1); padding:2px 8px; border-radius:6px; border:1px solid rgba(0,242,254,0.3);">ENTERPRISE SOC</span>
+                    </h2>
+                    <p style="margin:0; color:#64748b; font-size:12px;">Carrier-Grade 5G Control-Plane Threat Detection, Slice Isolation & SOAR Mitigation</p>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_stat:
+        st.markdown(
+            """
+            <div style="text-align: right; padding-top: 8px;">
+                <span class="badge badge-green" style="padding:6px 12px; font-size:12px;">
+                    ● 5G CORE ACTIVE N2/N1
                 </span>
             </div>
             """,
@@ -119,11 +230,18 @@ def main() -> None:
 
     # Sidebar Controls
     with st.sidebar:
-        st.image("https://img.icons8.com/color/96/5g.png", width=64)
-        st.header("⚙️ Pipeline Controls")
+        st.markdown(
+            """
+            <div style="background:rgba(30,41,59,0.5); padding:12px; border-radius:8px; border:1px solid #334155; margin-bottom:16px;">
+                <div style="font-size:11px; color:#94a3b8; font-weight:700;">ACTIVE INTERFACE</div>
+                <div style="color:#38bdf8; font-family:monospace; font-weight:bold; font-size:13px;">SCTP :38412 (gNB ↔ AMF)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        st.subheader("Traffic Ingestion")
-        pcap_path = st.text_input("PCAP Replay Source", value="data/pcaps/5g_signaling_demo.pcap")
+        st.subheader("⚙️ Traffic Ingestion")
+        pcap_path = st.text_input("Signaling PCAP Replay File", value="data/pcaps/5g_signaling_demo.pcap")
 
         if st.button("🚀 Replay PCAP Traffic", use_container_width=True, type="primary"):
             if not Path(pcap_path).exists():
@@ -137,7 +255,7 @@ def main() -> None:
             new_alerts = 0
             event_log = []
 
-            with st.spinner("Streaming & dissecting 5G control-plane packets..."):
+            with st.spinner("Dissecting 5G control-plane signaling packets..."):
                 for event in replayer.stream_events():
                     st.session_state.inspected_count += 1
                     event_log.append(
@@ -149,6 +267,8 @@ def main() -> None:
                             "IMEI": event.imei or "N/A",
                             "Slice": event.requested_slice_id or "N/A",
                             "Cell": event.cell_id or "N/A",
+                            "Cipher": event.cipher_algo or "NEA2",
+                            "Integrity": event.integrity_algo or "NIA2",
                         }
                     )
                     alerts = engine.process_event(event)
@@ -157,27 +277,27 @@ def main() -> None:
                         new_alerts += 1
 
             st.session_state.last_events = event_log
-            st.success(f"Dissected {len(event_log)} packets! Generated {new_alerts} new threat alerts.")
+            st.toast(f"✅ Dissected {len(event_log)} packets! Generated {new_alerts} alerts.", icon="🚨")
             st.rerun()
 
         st.divider()
-        st.subheader("Inventory & DB Maintenance")
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
+        st.subheader("🗄️ Database & Inventory Maintenance")
+        c_b1, c_b2 = st.columns(2)
+        with c_b1:
             if st.button("🌱 Re-Seed DB", use_container_width=True):
                 seed_inventory_from_csv("scripts/sample_devices.csv", db_path)
-                st.success("Seeded sample devices.")
+                st.toast("Seeded sample devices into inventory", icon="🌱")
                 st.rerun()
-        with col_s2:
+        with c_b2:
             if st.button("🗑️ Clear Alerts", use_container_width=True):
                 repo.clear_alerts()
                 st.session_state.inspected_count = 0
                 st.session_state.last_events = []
-                st.info("Cleared all alerts.")
+                st.toast("Cleared security alerts table", icon="🧹")
                 st.rerun()
 
         st.divider()
-        st.subheader("Filter Security Alerts")
+        st.subheader("🔍 Alert Filtering")
         selected_severity = st.selectbox(
             "Filter Severity",
             ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"],
@@ -201,28 +321,27 @@ def main() -> None:
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.rerun()
 
-    # Fetch Data
+    # Load Repository Data
     devices = repo.list_all(limit=500)
     sev_filter = None if selected_severity == "ALL" else selected_severity
     rule_filter = None if selected_rule == "ALL" else selected_rule
     all_alerts = repo.get_alerts(limit=500)
     filtered_alerts = repo.get_alerts(limit=500, severity=sev_filter, rule_type=rule_filter)
 
-    # Calculate Metrics
+    # Compute KPI Metrics
     crit_count = sum(1 for a in all_alerts if a.severity.value == "CRITICAL")
     high_count = sum(1 for a in all_alerts if a.severity.value == "HIGH")
     med_count = sum(1 for a in all_alerts if a.severity.value == "MEDIUM")
 
-    # Determine display packet count
-    effective_packets = (
+    display_packets = (
         st.session_state.inspected_count
         if st.session_state.inspected_count > 0
         else (6 if len(all_alerts) > 0 else 0)
     )
 
-    # Render KPI Cards
+    # Render Executive Metric Cards
     render_kpi_cards(
-        total_packets=effective_packets,
+        total_packets=display_packets,
         total_alerts=len(all_alerts),
         critical_count=crit_count,
         high_count=high_count,
@@ -234,19 +353,22 @@ def main() -> None:
 
     soar = SOAREngine(device_repo=repo, alert_repo=repo)
 
-    # Main Tabs
-    tab_threats, tab_slices, tab_devices, tab_packets, tab_api, tab_architecture = st.tabs(
+    # Main SOC Navigation Tabs
+    tab_threats, tab_topo, tab_slices, tab_packets, tab_devices, tab_license, tab_rules = st.tabs(
         [
-            "🚨 Real-Time Threat Alerts",
-            "🌐 5G Network-Slice Matrix",
-            "📱 Authorized eSIM Inventory",
-            "📡 Packet Stream Inspector",
-            "⚡ Enterprise API & SOAR",
-            "📖 5G Threat Architecture & Rules",
+            "🚨 Threat Incidents",
+            "🗺️ 5G Core Topology",
+            "🌐 Network-Slice Matrix",
+            "🔬 Signaling Stream Dissect",
+            "📱 Authorized Inventory",
+            "🔑 Commercial API & Licensing",
+            "📖 Detection Rulebook",
         ]
     )
 
-    # Tab 1: Real-Time Threat Alerts
+    # -------------------------------------------------------------------------
+    # Tab 1: Threat Incidents & Triage Queue
+    # -------------------------------------------------------------------------
     with tab_threats:
         col_c1, col_c2 = st.columns([1, 2])
         with col_c1:
@@ -254,137 +376,149 @@ def main() -> None:
         with col_c2:
             render_threat_timeline(all_alerts)
 
-        st.subheader(f"📋 Incident Triage Queue ({len(filtered_alerts)} Alerts)")
+        st.subheader(f"📋 Incident Triage Queue ({len(filtered_alerts)} Incident Cards)")
         if not filtered_alerts:
             st.info("No security incidents match the active filters. Network traffic is clean.")
         else:
             for alert in filtered_alerts:
                 render_alert_item(alert, repo, soar=soar)
 
-    # Tab 2: 5G Network Slice Matrix
-    with tab_slices:
-        render_network_slice_matrix(all_alerts, devices)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.subheader("3GPP 5G Network Slicing Isolation Model")
+    # -------------------------------------------------------------------------
+    # Tab 2: Interactive 5G Core Topology Map
+    # -------------------------------------------------------------------------
+    with tab_topo:
+        render_interactive_topology_graph(all_alerts, devices)
         st.markdown(
             """
-            In 5G Standalone (SA) architecture, **Network Slicing** partitions a single Physical 5G Core (5GC) into isolated logical subnetworks identified by **S-NSSAI** (Single Network Slice Selection Assistance Information):
+            <div style="background:#1e293b; padding:14px; border-radius:8px; border:1px solid #334155; font-size:12px; color:#94a3b8;">
+                <strong style="color:#f8fafc;">Topology Key:</strong>
+                <span style="margin-left:10px;">🔷 <strong>5G Core AMF:</strong> Control-Plane Ingress Anchor</span>
+                <span style="margin-left:14px;">🟩 <strong>gNodeB:</strong> Radio Access Node</span>
+                <span style="margin-left:14px;">💎 <strong>Slices (S-NSSAI):</strong> Virtualized Data Partitions</span>
+                <span style="margin-left:14px;">🔴 <strong>Red Link / Node:</strong> Active Threat Detection Vector</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # -------------------------------------------------------------------------
+    # Tab 3: Network Slice Matrix
+    # -------------------------------------------------------------------------
+    with tab_slices:
+        render_network_slice_matrix(all_alerts, devices)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            ### 3GPP TS 23.501 Slice Isolation Model
+            In 5G Standalone (SA) architecture, **Network Slicing** partitions a single Physical 5G Core (5GC) into isolated logical subnetworks identified by **S-NSSAI**:
             - **SST (Slice/Service Type):** Standard 8-bit integer (1: eMBB, 2: URLLC, 3: MIoT, 4: V2X, 5: High-Data-Rate).
             - **SD (Slice Differentiator):** Optional 24-bit hex value defining tenant or enterprise boundary.
 
-            **Threat Model:** A compromised device or malicious insider provisioning their eSIM for an enterprise or emergency slice without authorization can compromise critical low-latency SCADA operations or exfiltrate private intranet data. **NASWatch flags slice hopping in real time at the signaling layer.**
+            **Threat Mitigation:** Unauthorized slice hopping attempts to critical SCADA or emergency partitions trigger instant SOAR containment.
             """
         )
 
-    # Tab 3: Authorized eSIM Inventory
-    with tab_devices:
-        st.subheader(f"📱 Authorized Device Inventory ({len(devices)} Provisioned Subscribers)")
-
-        device_data = [
-            {
-                "IMSI (SUPI)": d.imsi,
-                "IMEI (PEI)": d.imei,
-                "Subscriber / Owner": d.owner_name,
-                "Hardware Model": d.device_model,
-                "Status": d.status.value,
-                "Authorized Slices": ", ".join([s.slice_id for s in d.allowed_slices]) or "None",
-                "Notes": d.notes,
-            }
-            for d in devices
-        ]
-        df_devices = pd.DataFrame(device_data)
-        st.dataframe(df_devices, use_container_width=True)
-
-        with st.expander("➕ Provision New 5G Subscriber"):
-            with st.form("form_add_device"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    new_imsi = st.text_input("IMSI / SUPI", value="999700000000006")
-                    new_owner = st.text_input("Owner / Organization", value="Finance Dept Gateway")
-                    new_status = st.selectbox("Status", ["ACTIVE", "SUSPENDED", "REVOKED"])
-                with c2:
-                    new_imei = st.text_input("IMEI / PEI", value="860123456789066")
-                    new_model = st.text_input("Device Model", value="Sierra Wireless 5G Module")
-                    new_slices_str = st.text_input("Allowed Slices (e.g. 1:000001;4:010203)", value="1:000001")
-
-                submitted = st.form_submit_button("Provision Device")
-                if submitted:
-                    new_dev = Device(
-                        imsi=new_imsi.strip(),
-                        imei=new_imei.strip(),
-                        owner_name=new_owner.strip(),
-                        device_model=new_model.strip(),
-                        status=DeviceStatus(new_status),
-                        allowed_slices=parse_slices_field(new_slices_str),
-                    )
-                    repo.add(new_dev)
-                    st.success(f"Device IMSI {new_imsi} provisioned successfully!")
-                    st.rerun()
-
-    # Tab 4: Packet Stream Inspector
+    # -------------------------------------------------------------------------
+    # Tab 4: Signaling Stream Dissect
+    # -------------------------------------------------------------------------
     with tab_packets:
-        st.subheader("📡 Decoded 5G Signaling Stream Inspector")
-        if st.session_state.last_events:
-            df_packets = pd.DataFrame(st.session_state.last_events)
-            st.dataframe(df_packets, use_container_width=True)
+        st.subheader("🔬 5G NGAP & NAS-5GS Protocol Frame Dissector")
+        if not st.session_state.last_events:
+            st.info("No packets dissected in this interactive session. Click **'🚀 Replay PCAP Traffic'** in the sidebar to stream frames.")
         else:
-            st.info("Click 'Replay PCAP Traffic' in the sidebar to run the dissector and inspect packets.")
+            df_events = pd.DataFrame(st.session_state.last_events)
+            st.dataframe(df_events, use_container_width=True, hide_index=True)
 
-    # Tab 5: Enterprise REST API & SOAR Control
-    with tab_api:
-        st.subheader("⚡ Enterprise REST API & Prometheus Telemetry")
+    # -------------------------------------------------------------------------
+    # Tab 5: Authorized Inventory
+    # -------------------------------------------------------------------------
+    with tab_devices:
+        st.subheader(f"📱 Provisioned 5G Subscribers ({len(devices)} Devices)")
+        if not devices:
+            st.warning("Inventory empty. Click 'Re-Seed DB' in sidebar.")
+        else:
+            dev_rows = [
+                {
+                    "IMSI (SUPI)": d.imsi,
+                    "IMEI (PEI)": d.imei,
+                    "Subscriber / Unit": d.owner_name,
+                    "Hardware Model": d.device_model,
+                    "Status": d.status.value,
+                    "Authorized Slices": ", ".join(s.slice_id for s in d.allowed_slices),
+                    "Notes": d.notes,
+                }
+                for d in devices
+            ]
+            st.dataframe(pd.DataFrame(dev_rows), use_container_width=True, hide_index=True)
 
-        col_a1, col_a2 = st.columns(2)
-        with col_a1:
+    # -------------------------------------------------------------------------
+    # Tab 6: Commercial API & Licensing
+    # -------------------------------------------------------------------------
+    with tab_license:
+        st.subheader("🔑 Commercial Licensing & M2M API Keys")
+        col_lic1, col_lic2 = st.columns(2)
+
+        with col_lic1:
             st.markdown(
                 """
-                ### 🚀 FastAPI Integration Endpoints
-                NASWatch exposes a high-performance **FastAPI microservice** on port `8000`:
-                - **Interactive OpenAPI Swagger Docs:** [`http://localhost:8000/docs`](http://localhost:8000/docs)
-                - **Health Probe:** `GET /health` (Kubernetes Liveness / Readiness)
-                - **Incident Stream:** `GET /api/v1/alerts` (JSON feed for SIEM / Splunk / Wazuh)
-                - **Automated SOAR Action:** `POST /api/v1/alerts/{id}/mitigate`
-                - **Subscriber Inventory:** `GET /api/v1/devices` & `POST /api/v1/devices`
-                - **Direct Ingestion:** `POST /api/v1/ingest/event` (AMF eBPF Sidecar Probe)
-                """
+                <div style="background:#1e293b; padding:18px; border-radius:10px; border:1px solid #334155;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h4 style="margin:0; color:#38bdf8;">Enterprise License</h4>
+                        <span class="badge badge-green">ACTIVE TIER</span>
+                    </div>
+                    <hr style="margin:10px 0; border-color:#334155;">
+                    <p style="font-size:13px; color:#cbd5e1; margin:4px 0;"><strong>Organization:</strong> Enterprise Telecommunications Lab</p>
+                    <p style="font-size:13px; color:#cbd5e1; margin:4px 0;"><strong>Edition:</strong> Commercial Enterprise v1.0.0</p>
+                    <p style="font-size:13px; color:#cbd5e1; margin:4px 0;"><strong>Active Feature Flags:</strong></p>
+                    <ul style="font-size:12px; color:#94a3b8; margin:0 0 0 16px;">
+                        <li>✓ Pure 3GPP Control-Plane Rulebook (6 Rules)</li>
+                        <li>✓ Alert Correlation & Incident Escalation Engine</li>
+                        <li>✓ Multi-Tenant JWT & RBAC Management</li>
+                        <li>✓ Immutable Audit Trail with SHA-256 Hashes</li>
+                        <li>✓ PagerDuty, Splunk HEC & Microsoft Sentinel Sinks</li>
+                        <li>✓ Prometheus & Grafana SOC Dashboards</li>
+                    </ul>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            st.code("uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000", language="bash")
 
-        with col_a2:
+        with col_lic2:
             st.markdown(
                 """
-                ### 📊 Prometheus Metrics Exporter
-                Real-time metrics are scraped via standard OpenMetrics format on `/metrics`:
-                - `naswatch_packets_inspected_total`: Rate of NGAP/NAS signaling traffic.
-                - `naswatch_alerts_generated_total{rule_type, severity}`: Incident velocity counters.
-                - `naswatch_provisioned_devices_total`: Current inventory gauge.
-                """
+                <div style="background:#1e293b; padding:18px; border-radius:10px; border:1px solid #334155;">
+                    <h4 style="margin:0; color:#38bdf8;">Generate Machine API Key</h4>
+                    <p style="font-size:12px; color:#94a3b8; margin:6px 0 12px 0;">Create SHA-256 hashed API keys for external AMF agents or Kubernetes probes.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            st.code("curl -s http://localhost:8000/metrics | head -n 15", language="bash")
+            key_name = st.text_input("Key Name", value="edge-probe-amf1")
+            key_role = st.selectbox("Role", ["analyst", "viewer", "admin"])
+            if st.button("Generate M2M API Key", use_container_width=True):
+                if _COMMERCIAL_AVAILABLE:
+                    store = APIKeyStore(db_path=db_path)
+                    raw_k, kid = store.create_key(name=key_name, role=key_role)
+                    st.success("API Key Generated:")
+                    st.code(raw_k, language="bash")
+                    st.caption("Copy this key now. It is stored as a SHA-256 hash.")
+                else:
+                    st.error("Auth module not found.")
 
-    # Tab 6: 5G Threat Architecture & Rules Guide
-    with tab_architecture:
-        st.subheader("📖 5G Threat Architecture & Detection Rule Specifications")
-        st.markdown(
-            """
-            ### Detection Rule Blueprint
-
-            | Rule ID | Rule Name | Trigger Condition | 3GPP Reference Layer | Severity |
-            |---|---|---|---|---|
-            | `RULE-5G-01` | **Rogue Device / Unauthorized eSIM** | Captured IMSI/SUPI does not exist in authorized inventory or is REVOKED | 3GPP TS 24.501 NAS Registration / TS 38.413 InitialUEMessage | **CRITICAL** |
-            | `RULE-5G-02` | **Identity Spoofing / SIM Cloning** | IMSI matches authorized inventory, but transmitting IMEI/PEI does not match provisioned hardware | 3GPP TS 24.501 SecurityModeComplete / IdentityResponse | **HIGH** |
-            | `RULE-5G-03` | **Network-Slice Intrusion** | Authenticated device attempts connection to S-NSSAI (SST/SD) slice not in provisioned entitlement | 3GPP TS 24.501 PDUSessionEstablishmentRequest | **MEDIUM** |
-
-            ---
-
-            ### Architectural Design Patterns
-            - **Separation of Concerns:** The pure detection rules in `naswatch.detection.rules` have zero database, network, or UI dependencies for instantaneous, deterministic unit testing.
-            - **Repository Pattern:** Swappable database backends (`DeviceRepository`, `AlertRepository`) allow migrating from SQLite to enterprise PostgreSQL or DynamoDB with zero changes to detection logic.
-            - **Pluggable Alert Sinks:** Dispatches to Webhook (SIEM/SOAR/Slack), Syslog (RFC 5424), JSON Lines log files, and live UI streams.
-            - **Defensive Packet Parsing:** Multi-layered decoding (PyShark/tshark with Scapy binary fallback) ensures bad or corrupted packets never crash the capture pipeline.
-            """
-        )
+    # -------------------------------------------------------------------------
+    # Tab 7: 5G Threat Architecture & Rules
+    # -------------------------------------------------------------------------
+    with tab_rules:
+        st.subheader("📖 3GPP 5GS Threat Detection Specifications")
+        rule_data = [
+            {"Rule ID": "RULE-5G-01", "Threat Name": "Rogue eSIM / Unknown IMSI", "Severity": "CRITICAL", "Layer": "TS 24.501 RegReq", "Impact": "Unprovisioned device accessing licensed spectrum"},
+            {"Rule ID": "RULE-5G-02", "Threat Name": "Identity Spoofing / SIM Cloning", "Severity": "HIGH", "Layer": "TS 24.501 SecMode", "Impact": "Captured IMSI transmitting from mismatched PEI"},
+            {"Rule ID": "RULE-5G-03", "Threat Name": "Slice Intrusion / Hopping", "Severity": "MEDIUM", "Layer": "TS 24.501 PDUEstablish", "Impact": "Unauthorized access to SCADA or emergency slice"},
+            {"Rule ID": "RULE-5G-04", "Threat Name": "Cipher / Integrity Downgrade", "Severity": "HIGH", "Layer": "TS 24.501 SecModeCmd", "Impact": "Null encryption (NEA0/NIA0) enabling MITM eavesdropping"},
+            {"Rule ID": "RULE-5G-05", "Threat Name": "False Base Station / Rogue gNB", "Severity": "CRITICAL", "Layer": "TS 38.413 NGAP InitialUE", "Impact": "Fake cell attracting subscribers (IMSI catcher)"},
+            {"Rule ID": "RULE-5G-06", "Threat Name": "Signaling Flood / Storm", "Severity": "HIGH", "Layer": "TS 24.501 Rate Limit", "Impact": "Signaling DoS against 5G Core AMF registration plane"},
+        ]
+        st.dataframe(pd.DataFrame(rule_data), use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
