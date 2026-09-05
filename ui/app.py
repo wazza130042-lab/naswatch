@@ -16,16 +16,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
 from naswatch.detection.engine import DetectionEngine
 from naswatch.ingestion.pcap_replay import PCAPReplayer
 from naswatch.mitigation.soar import SOAREngine
-from naswatch.storage.models import Device, DeviceStatus
 from naswatch.storage.sqlite_repo import SQLiteRepository
-from scripts.seed_inventory import parse_slices_field, seed_inventory_from_csv
+from scripts.seed_inventory import seed_inventory_from_csv
 from ui.components import (
     render_alert_item,
     render_interactive_topology_graph,
@@ -38,7 +37,6 @@ from ui.components import (
 # Optional commercial modules
 try:
     from naswatch.auth.api_keys import APIKeyStore
-    from naswatch.licensing.validator import validate_license
     _COMMERCIAL_AVAILABLE = True
 except ImportError:
     _COMMERCIAL_AVAILABLE = False
@@ -61,7 +59,7 @@ st.markdown(
     html, body, [class*="css"] {
         font-family: 'Plus Jakarta Sans', sans-serif;
     }
-    
+
     code, pre {
         font-family: 'JetBrains Mono', monospace !important;
     }

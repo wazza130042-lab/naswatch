@@ -12,12 +12,10 @@ Includes:
 
 from __future__ import annotations
 
-import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from datetime import datetime
 
 from naswatch.storage.models import Alert, Device
 
@@ -395,26 +393,9 @@ def render_network_slice_matrix(alerts: list[Alert], devices: list[Device]) -> N
 # =============================================================================
 def render_alert_item(alert: Alert, repo, soar=None) -> None:
     """Render an individual expandable incident card with actionable mitigation controls, firewall generation, and 3GPP inspection."""
-    sev_colors = {
-        "CRITICAL": "badge-crit",
-        "HIGH": "badge-orange",
-        "MEDIUM": "badge-yellow",
-        "LOW": "badge-blue",
-    }
-    badge_class = sev_colors.get(alert.severity.value, "badge-blue")
 
-    header_html = f"""
-    <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-        <div>
-            <span class="badge {badge_class}">{alert.severity.value}</span>
-            <span style="font-family:monospace; margin-left:8px; color:#38bdf8;">{alert.rule_type.value}</span>
-            <span style="margin-left:12px; font-weight:600; color:#f8fafc;">{alert.title}</span>
-        </div>
-        <div style="color:#94a3b8; font-size:12px; font-family:monospace;">
-            IMSI: {alert.imsi or 'N/A'} | Cell: {alert.cell_id or 'N/A'}
-        </div>
-    </div>
-    """
+
+
 
     with st.expander(f"[{alert.severity.value}] {alert.rule_type.value} — {alert.title} (IMSI: {alert.imsi or 'N/A'})", expanded=(alert.severity.value == "CRITICAL")):
         c_left, c_right = st.columns([3, 2])
@@ -457,7 +438,6 @@ def render_alert_item(alert: Alert, repo, soar=None) -> None:
             # Dynamic Firewall Rule Dropdown
             with st.expander("🛡️ Dynamic Firewall Rule Generator", expanded=False):
                 fw_imsi = alert.imsi or "000000000000000"
-                fw_cell = alert.cell_id or "0x000000010"
                 iptables_rule = f"sudo iptables -A FORWARD -m string --hex-string '{fw_imsi}' --algo bm -j DROP"
                 st.code(iptables_rule, language="bash")
                 st.caption("Drop SCTP signaling from rogue identity at edge gateway.")
