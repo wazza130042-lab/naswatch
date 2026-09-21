@@ -1,0 +1,59 @@
+# UERANSIM rogue UE for NASWatch intrusion testing.
+# Charlie's IMSI (999700000000003) is an ex-contractor whose device was
+# deprovisioned (SUSPENDED, no auth vector in the core). His device is NOT
+# in the Open5GS subscriber DB, so any attach attempt should trigger
+# RULE-5G-01/02 (Rogue Device / Unauthorized Assist).
+# K and OPc from the NASWatch testbed subscriber DB.
+supi: 'imsi-999700000000003'
+mcc: '999'
+mnc: '70'
+key: '465B5CE8B199B49FAA5F0A2EE238A6BC'
+op: '2E001F1DF0A0BB769940A2C6342CF795'
+opType: 'OPC'
+amf: '8000'
+imei: '356938035643805'
+imeiSv: '4370816125816153'
+
+gnbSearchList:
+  - 127.0.0.11
+
+uacAic:
+  mps: false
+  mcs: false
+
+uacAcc:
+  normalClass: 0
+  class11: false
+  class12: false
+  class13: false
+  class14: false
+  class15: false
+
+sessions:
+  - type: 'IPv4'
+    apn: 'internet'
+    slice:
+      sst: 1
+      sd: 1
+
+configured-nssai:
+  - sst: 1
+    sd: 1
+
+default-nssai:
+  - sst: 1
+    sd: 1
+
+integrity:
+  IA1: true
+  IA2: true
+  IA3: true
+
+ciphering:
+  EA1: true
+  EA2: true
+  EA3: true
+
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'

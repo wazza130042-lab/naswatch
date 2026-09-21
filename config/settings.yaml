@@ -20,7 +20,15 @@ storage:
   sqlite_path: "data/inventory.db"
   auto_migrate: true
 
+network:
+  authorized_cells:
+    - "0x000000010"
+    - "0x000000011"
+    - "0x000000012"
+
 detection:
+  flood_threshold: 10
+  flood_window_seconds: 60
   rules:
     rogue_device:
       enabled: true
@@ -34,6 +42,18 @@ detection:
       enabled: true
       severity: "MEDIUM"
       description: "Device connected to a Network Slice (S-NSSAI) not provisioned for this subscriber"
+    cipher_downgrade:
+      enabled: true
+      severity: "HIGH"
+      description: "Negotiated NEA0 (null ciphering) or NIA0 (null integrity) on a non-emergency connection"
+    false_base_station:
+      enabled: true
+      severity: "CRITICAL"
+      description: "Signaling originating from a Cell ID not present in the authorized radio cell inventory"
+    signaling_flood:
+      enabled: true
+      severity: "HIGH"
+      description: "A single IMSI generating more than flood_threshold RegistrationRequests within the window"
 
 network_slices:
   authorized_slices:

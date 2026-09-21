@@ -1,6 +1,7 @@
-# Open5GS SMF (Session Management Function) Configuration
+# Open5GS SMF Configuration for NASWatch 5G Testbed
 logger:
-  file: /var/log/open5gs/smf.log
+  file:
+    path: /home/megbaru/open5gs/install/var/log/open5gs/smf.log
   level: info
 
 smf:
@@ -11,18 +12,22 @@ smf:
     client:
       nrf:
         - uri: http://127.0.0.10:7777
-  gtpu:
-    server:
-      - address: 127.0.0.4
   pfcp:
     server:
       - address: 127.0.0.4
     client:
       upf:
         - address: 127.0.0.7
-  subnet:
-    - addr: 10.45.0.1/16
-      dnn: internet
+  gtpu:
+    server:
+      - address: 127.0.0.4
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+  dns:
+    - 8.8.8.8
+    - 8.8.4.4
+  mtu: 1400
   info:
     s_nssai:
       - sst: 1
@@ -32,4 +37,8 @@ smf:
       - sst: 2
         sd: 000002
         dnn:
-          - emergency
+          - internet
+      - sst: 3
+        sd: 000003
+        dnn:
+          - internet

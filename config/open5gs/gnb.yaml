@@ -1,13 +1,14 @@
-# UERANSIM / gNB Configuration for 5G Core testbed
+# gNB config for NASWatch 5G loopback testbed (Open5GS on same host)
 mcc: '999'
 mnc: '70'
+
 nci: '0x000000010'
 idLength: 32
 tac: 1
 
-linkIp: 127.0.0.1
-ngapIp: 127.0.0.1
-gtpIp: 127.0.0.1
+linkIp: 127.0.0.11
+ngapIp: 127.0.0.11
+gtpIp: 127.0.0.11
 
 amfConfigs:
   - address: 127.0.0.5

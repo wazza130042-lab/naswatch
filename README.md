@@ -115,11 +115,17 @@ flowchart TD
 
 ### 1. 🔐 Authentication, Authorization & RBAC
 - **JWT Bearer Auth:** HS256 signed access and refresh tokens with configurable expiration.
+- **Refresh Token Rotation:** Server-side persisted refresh sessions (`jti`), rotated on every refresh with reuse detection (replay rejection).
+- **SSO / OIDC (Enterprise):** External identity providers (Keycloak, Entra ID, Okta, Auth0) via
+  OpenID discovery + JWKS signature validation. Operator accounts are auto-provisioned from token
+  claims, and `NASWATCH_OIDC_ENFORCED=true` disables password login org-wide.
 - **M2M API Keys:** SHA-256 hashed API keys (`nw_...`) for automated probes and external AMF agents.
 - **Role-Based Access Control (RBAC):**
   - `admin`: Full system control, device management, API keys, user administration, and audit inspection.
   - `analyst`: Alert triage, SOAR execution, incident investigation, and forensic report export.
   - `viewer`: Read-only access to alerts and inventory matrices.
+- **Tenant Isolation:** Every identity operation is scoped by `org_id`; system administrators (org `*`)
+  may manage all tenants, regular admins only their own.
 - **Per-IP Rate Limiting:** Configurable request throttling powered by `slowapi`.
 
 ### 2. ⚡ Alert Correlation Engine
@@ -138,10 +144,12 @@ flowchart TD
 - **Microsoft Sentinel:** Custom log table ingestion via Log Analytics Data Collector API.
 
 ### 5. 📜 Immutable Audit Trail
-- All administrative, authentication, and mitigation actions are logged with actor identity, timestamp, IP address, and **SHA-256 integrity hashes** for tamper detection.
+- All administrative, authentication, and mitigation actions are logged with actor identity, timestamp, IP address, and a **tamper-evident, keyed hash chain**.
+- Each entry's integrity is an **HMAC-SHA256** (keyed by `NASWATCH_JWT_SECRET`), and every entry stores the hash of its predecessor, so any modification or reordering breaks the chain. `/api/v1/audit/verify` reports exactly which entries were tampered with.
 
 ### 6. 📊 Grafana SOC Dashboards & Prometheus Monitoring
 - Bundled Grafana 10.x dashboard with pre-provisioned Prometheus data sources and live KPI panels.
+- Prometheus `/metrics` exposes request, packet, alert, authentication (login/refresh/SSO), and user-directory counters for SOC alerting.
 
 ---
 
@@ -167,7 +175,7 @@ naswatch/
 │   │   └── provisioning/
 │   │       ├── dashboards/naswatch.yaml
 │   │       └── datasources/prometheus.yaml
-│   └── open5gs/                # Virtual 5G Core configurations (AMF, gNB, SMF)
+│   └── open5gs/                # Virtual 5G Core configurations (AMF, gNB, SMF, UE)
 │
 ├── src/
 │   └── naswatch/
@@ -280,7 +288,16 @@ streamlit run ui/app.py
 | `GET` | `/health` | Public | Kubernetes liveness & readiness probe |
 | `GET` | `/metrics` | Public | Prometheus time-series metrics exporter |
 | `POST` | `/api/v1/auth/login` | Public | Authenticate with credentials to receive JWT access + refresh tokens |
-| `POST` | `/api/v1/auth/refresh` | Authenticated | Refresh expired access token |
+| `GET` | `/api/v1/auth/oidc/config` | Public | OIDC/SSO discovery metadata for the login UI |
+| `POST` | `/api/v1/auth/oidc/assert` | Public | Exchange a validated IdP `id_token` for NASWatch tokens |
+| `POST` | `/api/v1/auth/refresh` | Authenticated | Refresh access token with server-side rotation (reuse detection) |
+| `POST` | `/api/v1/auth/logout` | Authenticated | Revoke the presented refresh session |
+| `GET` | `/api/v1/auth/me` | Authenticated | Current actor identity, role and tenant org |
+| `GET` | `/api/v1/users` | Admin | List operator accounts (tenant-scoped) |
+| `POST` | `/api/v1/users` | Admin | Provision an operator account |
+| `PUT` | `/api/v1/users/{id}` | Admin | Update role / active status |
+| `POST` | `/api/v1/users/{id}/reset-password` | Admin | Admin-forced password reset |
+| `DELETE` | `/api/v1/users/{id}` | Admin | Delete an account and revoke its sessions |
 | `POST` | `/api/v1/apikeys` | Admin | Generate a new M2M API key |
 | `GET` | `/api/v1/apikeys` | Admin | List active API keys |
 | `DELETE` | `/api/v1/apikeys/{id}` | Admin | Revoke an API key |
@@ -293,27 +310,75 @@ streamlit run ui/app.py
 | `DELETE` | `/api/v1/devices/{imsi}` | Admin | Delete subscriber from inventory |
 | `POST` | `/api/v1/ingest/event` | Analyst+ | Real-time telemetry ingestion from AMF/eBPF probe |
 | `GET` | `/api/v1/audit` | Admin | Query immutable audit trail with integrity verification |
+| `GET` | `/api/v1/audit/verify` | Admin | Full-chain tamper verification (reports broken entry IDs) |
 | `GET` | `/api/v1/license` | Authenticated | Inspect active license tier and feature flags |
 
 ---
 
 ## 🐳 Full Production Docker Stack
 
-Deploy the complete carrier-grade stack with one command:
+Deploy the complete stack with one command:
 
 ```bash
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
-This provisions 6 enterprise services:
+> **Storage & scaling:** NASWatch auto-selects PostgreSQL when `NASWATCH_DB_URL` is set
+> (`postgres://` / `postgresql://`) and otherwise persists to SQLite (WAL mode) via `./data`.
+> The API scales with `NASWATCH_WORKERS > 1` **only** against PostgreSQL.
+
+This provisions 5 enterprise services:
 | Container | Port | Role |
 |---|---|---|
-| `naswatch-api` | `8000` | FastAPI REST API (4 uvicorn workers) + Prometheus metrics |
-| `naswatch-ui` | `8501` | Streamlit SOC Live Dashboard |
-| `naswatch-postgres` | `5432` | Production Relational Incident Store |
-| `naswatch-redis` | `6379` | High-throughput distributed rate-limiter & cache |
+| `naswatch-caddy` | `443/80` | TLS edge — terminates HTTPS, fronts API (`/api`) and UI |
+| `naswatch-api` | `8000` (internal) | FastAPI REST API + Prometheus metrics |
+| `naswatch-db` | `5432` (internal) | PostgreSQL 16 (persistent volume) |
 | `naswatch-prometheus` | `9090` | Prometheus metric collection engine (90-day retention) |
 | `naswatch-grafana` | `3000` | Grafana 10.x with pre-configured 5G IDS SOC dashboards |
+
+## 🗄️ Backup & Disaster Recovery
+
+`scripts/backup.py` snapshots the active backend — SQLite via the online sqlite3 backup API
+(safe under WAL) or PostgreSQL via `pg_dump`/`psql`:
+
+```bash
+python3 scripts/backup.py --target /backups --compress gzip   # backup
+python3 scripts/backup.py --restore /backups/inventory-*.db.gz # restore
+```
+
+Schedule nightly via cron: `0 2 * * * python3 /opt/naswatch/scripts/backup.py --compress gzip`, then
+ship the archive off-box. Restore validates `PRAGMA integrity_check` (SQLite) or `pg_dump --clean`
+reload (PostgreSQL).
+
+---
+
+## 📡 Open5GS + UERANSIM Testbed Startup Order
+
+NASWatch inspects the gNB ↔ AMF N2/N1 SCTP interface. To generate live traffic:
+
+1. **Start the 5G Core (NRF first, then the rest)** — use the project configs:
+   ```bash
+   cd ~/open5gs
+   ./build/src/nrf/open5gs-nrfd -c ~/open5gs/build/configs/open5gs/nrf.yaml       # NRF (127.0.0.10:7777)
+   ./build/src/amf/open5gs-amfd -c ~/Documents/naswatch/config/open5gs/amf.yaml
+   ./build/src/smf/open5gs-smfd -c ~/Documents/naswatch/config/open5gs/smf.yaml
+   ./build/src/upf/open5gs-upfd -c ~/open5gs/build/configs/open5gs/upf.yaml       # default UPF (127.0.0.7)
+   # then UDM, UDR, AUSF, PCF (default install configs)
+   ```
+2. **Start UERANSIM gNB + UE**:
+   ```bash
+   cd <ueransim-dir>
+   ./build/nr-gnb -c ~/Documents/naswatch/config/open5gs/gnb.yaml
+   ./build/nr-ue -c ~/Documents/naswatch/config/open5gs/ue.yaml
+   ```
+3. **Start NASWatch in live mode** (as root, interface `any`):
+   ```bash
+   python3 scripts/run_pipeline.py --mode live --interface any
+   ```
+
+> **Rogue-UE demo:** `config/open5gs/ue-rogue.yaml` requests slice `SST 4 / SD 010203`
+> (Enterprise-Private). For IMSI 999700000000002 that is not provisioned, tripping
+> `RULE-5G-03` (Slice Intrusion).
 
 ---
 

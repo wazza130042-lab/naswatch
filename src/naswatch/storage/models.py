@@ -35,6 +35,12 @@ class DeviceStatus(str, Enum):
     SUSPENDED = "SUSPENDED"
 
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    VIEWER = "viewer"
+
+
 @dataclass
 class SliceAssignment:
     """Represents an authorized S-NSSAI (Single Network Slice Selection Assistance Information)."""
@@ -76,6 +82,7 @@ class Device:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     notes: str = ""
+    org_id: str = "default"  # Multi-tenant ownership scope
 
     def is_slice_authorized(self, sst: int, sd: str | None = None) -> bool:
         """Verify whether this device is authorized to attach to the given S-NSSAI slice."""
@@ -134,6 +141,7 @@ class Alert:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     mitigation_status: str = "NEW"  # NEW, INVESTIGATING, BLOCKED, RESOLVED
     raw_event: dict[str, Any] | None = None
+    org_id: str = "default"  # Multi-tenant ownership scope
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,4 +157,34 @@ class Alert:
             "target_slice": self.target_slice,
             "mitigation_status": self.mitigation_status,
             "raw_event": self.raw_event or {},
+            "org_id": self.org_id,
         }
+
+
+@dataclass
+class User:
+    """Authenticated operator account with an RBAC role and tenant scope."""
+    username: str
+    password_hash: str
+    role: UserRole
+    org_id: str = "default"
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    active: bool = True
+    must_change_password: bool = False
+
+    def to_dict(self, include_secret: bool = False) -> dict[str, Any]:
+        data = {
+            "id": self.id,
+            "username": self.username,
+            "role": self.role.value,
+            "org_id": self.org_id,
+            "active": self.active,
+            "must_change_password": self.must_change_password,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+        if include_secret:
+            data["password_hash"] = self.password_hash
+        return data

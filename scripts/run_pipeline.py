@@ -116,6 +116,12 @@ def main() -> None:
         enable_rogue_rule=det_cfg.get("rogue_device", {}).get("enabled", True),
         enable_spoofing_rule=det_cfg.get("identity_spoofing", {}).get("enabled", True),
         enable_slice_rule=det_cfg.get("slice_intrusion", {}).get("enabled", True),
+        enable_cipher_rule=det_cfg.get("cipher_downgrade", {}).get("enabled", True),
+        enable_false_bs_rule=det_cfg.get("false_base_station", {}).get("enabled", True),
+        enable_flood_rule=det_cfg.get("signaling_flood", {}).get("enabled", True),
+        authorized_cells=cfg.get("network", {}).get("authorized_cells"),
+        flood_threshold=int(cfg.get("detection", {}).get("flood_threshold", 10)),
+        flood_window_seconds=float(cfg.get("detection", {}).get("flood_window_seconds", 60)),
     )
 
     # Configure Alert Sinks

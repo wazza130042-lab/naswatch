@@ -30,13 +30,22 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from naswatch.auth.oidc import OIDCProvider
 from naswatch.detection.engine import DetectionEngine
 from naswatch.mitigation.soar import SOAREngine
+from naswatch.storage.factory import (
+    create_refresh_token_store,
+    create_repository,
+    create_user_store,
+    get_db_path,
+    get_db_url,
+)
 from naswatch.storage.models import (
     Device,
     DeviceStatus,
     ParsedSignalingEvent,
     SliceAssignment,
+    UserRole,
 )
 from naswatch.storage.sqlite_repo import SQLiteRepository
 
@@ -47,11 +56,9 @@ try:
     from naswatch.auth.api_keys import APIKeyStore
     from naswatch.auth.jwt_handler import (
         create_access_token,
-        create_refresh_token,
         decode_token,
-        hash_password,
-        verify_password,
     )
+    from naswatch.auth.users import issue_new_refresh
     _AUTH_AVAILABLE = True
 except ImportError:
     _AUTH_AVAILABLE = False
@@ -103,6 +110,21 @@ PROMETHEUS_API_REQUESTS = Counter(
     "Total API requests by endpoint and method",
     ["method", "endpoint", "status_code"],
 )
+PROMETHEUS_AUTH_LOGINS = Counter(
+    "naswatch_auth_logins_total",
+    "Authentication events by outcome and method",
+    ["outcome", "method"],
+)
+PROMETHEUS_REFRESH_ROTATIONS = Counter(
+    "naswatch_refresh_rotations_total",
+    "Refresh token rotation events by outcome",
+    ["outcome"],
+)
+PROMETHEUS_USER_OPS = Counter(
+    "naswatch_user_operations_total",
+    "Operator directory operations by action",
+    ["action"],
+)
 
 # ---------------------------------------------------------------------------
 # Rate Limiter (slowapi)
@@ -131,14 +153,31 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS
-_cors_origins = os.environ.get("NASWATCH_CORS_ORIGINS", "*").split(",")
+_cors_origins = os.environ.get("NASWATCH_CORS_ORIGINS", "http://localhost:8501").split(",")
+_cors_origins = [o.strip() for o in _cors_origins if o.strip()]
+# Browsers reject wildcard origins combined with credentials; disable credentials when allowing all.
+_allow_credentials = "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "X-API-Key", "Content-Type"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Security hardening middleware
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
 
 # ---------------------------------------------------------------------------
 # Singletons
@@ -149,23 +188,60 @@ _soar: SOAREngine | None = None
 _audit: Any | None = None
 _correlation: Any | None = None
 _api_key_store: Any | None = None
+_user_store: Any | None = None
+_refresh_store: Any | None = None
+_oidc: Any | None = None
 _pagerduty: Any | None = None
 _splunk: Any | None = None
 _sentinel: Any | None = None
 _license_info: Any | None = None
 
+# Warn loudly if the JWT signing secret is still the placeholder.
+_default_secret = "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY"
+if os.environ.get("NASWATCH_JWT_SECRET", "") in ("", _default_secret, "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY-IN-PRODUCTION"):
+    import logging
+
+    logging.getLogger("naswatch.api").warning(
+        "NASWATCH_JWT_SECRET is not set to a strong secret. Set a 256-bit random value in production."
+    )
+
 
 def get_repo() -> SQLiteRepository:
     global _repo
     if _repo is None:
-        _repo = SQLiteRepository(db_path=os.environ.get("NASWATCH_DB_PATH", "data/inventory.db"))
+        _repo = create_repository()
     return _repo
+
+
+def get_user_store() -> Any:
+    global _user_store
+    if _user_store is None and _AUTH_AVAILABLE:
+        _user_store = create_user_store()
+    return _user_store
+
+
+def get_refresh_store() -> Any:
+    global _refresh_store
+    if _refresh_store is None and _AUTH_AVAILABLE:
+        _refresh_store = create_refresh_token_store()
+    return _refresh_store
+
+
+def get_oidc() -> OIDCProvider:
+    global _oidc
+    if _oidc is None:
+        _oidc = OIDCProvider()
+    return _oidc
 
 
 def get_engine() -> DetectionEngine:
     global _engine
     if _engine is None:
-        _engine = DetectionEngine(device_repo=get_repo())
+        _engine = DetectionEngine(
+            device_repo=get_repo(),
+            flood_threshold=int(os.environ.get("NASWATCH_FLOOD_THRESHOLD", "10")),
+            flood_window_seconds=float(os.environ.get("NASWATCH_FLOOD_WINDOW_SECONDS", "60")),
+        )
     return _engine
 
 
@@ -180,7 +256,8 @@ def get_soar() -> SOAREngine:
 def get_audit() -> Any:
     global _audit
     if _audit is None and _AUDIT_AVAILABLE:
-        _audit = AuditLogger(db_path=os.environ.get("NASWATCH_DB_PATH", "data/inventory.db"))
+        _audit = AuditLogger(db_path=get_db_path() if not get_db_url() else None,
+                             db_url=get_db_url())
     return _audit
 
 
@@ -294,12 +371,26 @@ def _require(permission: str):
     return _inner
 
 
+def _is_cross_tenant_admin(actor: dict, target_org: str | None) -> bool:
+    """
+    True when the actor is a system-wide admin (org id `*`) permitted to manage
+    resources in *any* tenant. Ordinary admins only manage their own org.
+    """
+    if target_org and actor.get("org_id") == target_org:
+        return True
+    return actor.get("role") == "admin" and actor.get("org_id") == "*"
+
+
 # ---------------------------------------------------------------------------
 # Pydantic Request / Response Models
 # ---------------------------------------------------------------------------
 class LoginRequest(BaseModel):
     username: str = Field(..., description="Username (email or username)")
     password: str = Field(..., description="Account password")
+
+
+class OIDCAssertRequest(BaseModel):
+    id_token: str = Field(..., description="OIDC identity token validated against the IdP")
 
 
 class TokenResponse(BaseModel):
@@ -309,6 +400,21 @@ class TokenResponse(BaseModel):
     expires_in: int = 3600
     role: str
     org_id: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=128, description="Operator username/email")
+    password: str = Field(..., min_length=12, max_length=128, description="Initial password (min 12 chars)")
+    role: str = Field(..., description="admin | analyst | viewer")
+
+
+class UserUpdateRequest(BaseModel):
+    role: str | None = Field(default=None, description="New role (admin | analyst | viewer)")
+    active: bool | None = Field(default=None, description="Enable/disable the account")
+
+
+class PasswordResetRequest(BaseModel):
+    new_password: str = Field(..., min_length=12, max_length=128, description="New password (min 12 chars)")
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -409,45 +515,338 @@ def get_license_info(actor: dict = Depends(get_current_actor)) -> dict[str, Any]
 @limiter.limit("10/minute")
 def login(request: Request, body: LoginRequest) -> TokenResponse:
     """
-    Authenticate with username+password, receive JWT access + refresh tokens.
-    Default credentials: admin / naswatch-admin-password
+    Authenticate with username+password against the operator directory.
+    Returns JWT access + refresh tokens (refresh token is persisted for rotation).
     """
     if not _AUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Auth module not installed.")
 
-    admin_user = os.environ.get("NASWATCH_ADMIN_EMAIL", "admin@naswatch.io")
-    admin_pass = os.environ.get("NASWATCH_ADMIN_PASSWORD", "naswatch-admin-password")
+    oidc = get_oidc()
+    if oidc.enforced:
+        if not oidc.enabled:
+            raise HTTPException(
+                status_code=503,
+                detail="NASWATCH_OIDC_ENFORCED is true but OIDC is not configured.",
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="Password login is disabled for this tenant. Use SSO.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    if body.username != admin_user or (body.password != admin_pass and not verify_password(body.password, hash_password(admin_pass))):
+    user_store = get_user_store()
+    refresh_store = get_refresh_store()
+    if not user_store or not refresh_store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+
+    user = user_store.authenticate(body.username, body.password)
+    if not user:
+        PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="password").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access = create_access_token(subject=body.username, role="admin", org_id="default")
-    refresh = create_refresh_token(subject=body.username, role="admin", org_id="default")
+    access = create_access_token(
+        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+    )
+    refresh = issue_new_refresh(refresh_store, user)
+    PROMETHEUS_AUTH_LOGINS.labels(outcome="success", method="password").inc()
 
     audit = get_audit()
     if audit:
-        audit.log(actor=body.username, action="auth.login", resource="session",
-                  details={"method": "password"}, org_id="default",
+        audit.log(actor=user.username, action="auth.login", resource=user.id,
+                  details={"method": "password", "role": user.role.value},
+                  org_id=user.org_id,
                   ip_address=request.client.host if request.client else None)
-    return TokenResponse(access_token=access, refresh_token=refresh, role="admin", org_id="default")
+    return TokenResponse(access_token=access, refresh_token=refresh, role=user.role.value, org_id=user.org_id)
 
 
 @app.post("/api/v1/auth/refresh", tags=["Authentication"])
 @limiter.limit("30/minute")
 def refresh_token(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
-    """Exchange a refresh token for a new access token."""
+    """
+    Exchange a refresh token for a fresh access token, rotating the refresh token.
+    Reuse of an already-rotated token is rejected (detects token theft).
+    """
     if not _AUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Auth module not installed.")
+    if actor.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A refresh token is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    jti = actor.get("jti")
+    if not jti:
+        raise HTTPException(status_code=401, detail="Invalid refresh token.")
+
+    refresh_store = get_refresh_store()
+    user_store = get_user_store()
+    if not refresh_store or not user_store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    if not refresh_store.is_valid(jti):
+        PROMETHEUS_REFRESH_ROTATIONS.labels(outcome="rejected").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired or revoked.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = actor.get("user_id")
+    user = user_store.get_by_id(user_id) if user_id else None
+    if not user or not user.active:
+        refresh_store.revoke_all_for_user(user_id or "")
+        raise HTTPException(status_code=401, detail="Account inactive or revoked.")
+
+    new_refresh = issue_new_refresh(refresh_store, user)
+    refresh_store.rotate(jti, decode_token(new_refresh)["jti"])
+    PROMETHEUS_REFRESH_ROTATIONS.labels(outcome="rotated").inc()
+
     access = create_access_token(
-        subject=actor["sub"],
-        role=actor.get("role", "viewer"),
+        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+    )
+    return {
+        "access_token": access,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+        "role": user.role.value,
+        "org_id": user.org_id,
+    }
+
+
+@app.post("/api/v1/auth/logout", tags=["Authentication"])
+def logout(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
+    """Revoke the presented refresh token (forced sign-out of a session)."""
+    if not _AUTH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Auth module not installed.")
+    body = request.json() or {}
+    refresh_token_str = body.get("refresh_token")
+    if refresh_token_str:
+        payload = decode_token(refresh_token_str)
+        if payload.get("type") == "refresh" and payload.get("jti"):
+            refresh_store = get_refresh_store()
+            if refresh_store:
+                refresh_store.revoke(payload["jti"])
+    audit = get_audit()
+    if audit:
+        audit.log(actor=actor["sub"], action="auth.logout", resource=actor.get("user_id"),
+                  org_id=actor.get("org_id", "default"),
+                  ip_address=request.client.host if request.client else None)
+    return {"success": True, "message": "Session invalidated."}
+
+
+# ---------------------------------------------------------------------------
+# ── User Administration (RBAC directory) ─────────────────────────────────────
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/auth/me", tags=["Authentication"])
+def whoami(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
+    """Return the authenticated actor's identity and granted role."""
+    if not _AUTH_AVAILABLE:
+        return {"sub": actor.get("sub"), "role": actor.get("role"), "org_id": actor.get("org_id")}
+    store = get_user_store()
+    user = store.get_by_id(actor["user_id"]) if actor.get("user_id") and store else None
+    if not user:
+        return {"sub": actor.get("sub"), "role": actor.get("role"), "org_id": actor.get("org_id")}
+    return {"sub": user.username, "role": user.role.value, "org_id": user.org_id, "id": user.id}
+
+
+# ---------------------------------------------------------------------------
+# ── SSO / OIDC ───────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/auth/oidc/config", tags=["Authentication"])
+def oidc_config() -> dict[str, Any]:
+    """Return public OIDC metadata so clients can render an 'SSO' login flow."""
+    return get_oidc().public_config()
+
+
+@app.post("/api/v1/auth/oidc/assert", tags=["Authentication"])
+@limiter.limit("20/minute")
+def oidc_assert(
+    request: Request,
+    body: OIDCAssertRequest,
+) -> dict[str, Any]:
+    """
+    Exchange a validated OIDC identity token for NASWatch access + refresh tokens.
+
+    The caller obtains the `id_token` directly from the IdP's authorization
+    flow; the API verifies signature, issuer and audience before issuing tokens.
+    """
+    if not _AUTH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Auth module not installed.")
+    oidc = get_oidc()
+    if not oidc.enabled:
+        raise HTTPException(status_code=501, detail="OIDC is not configured on this server.")
+    try:
+        claims = oidc.validate_id_token(body.id_token)
+    except Exception as exc:
+        PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="oidc").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid OIDC identity token: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    store = get_user_store()
+    refresh_store = get_refresh_store()
+    if not store or not refresh_store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    try:
+        user = oidc.claims_to_user(store, claims)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not provision OIDC user: {exc}") from exc
+
+    access = create_access_token(
+        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+    )
+    refresh = issue_new_refresh(refresh_store, user)
+    PROMETHEUS_AUTH_LOGINS.labels(outcome="success", method="oidc").inc()
+
+    audit = get_audit()
+    if audit:
+        audit.log(actor=user.username, action="auth.login.oidc", resource=user.id,
+                  details={"idp": oidc.issuer, "role": user.role.value},
+                  org_id=user.org_id,
+                  ip_address=request.client.host if request.client else None)
+    return TokenResponse(access_token=access, refresh_token=refresh, role=user.role.value, org_id=user.org_id)
+
+
+@app.get("/api/v1/users", tags=["User Management"])
+def list_users(
+    request: Request,
+    actor: dict = Depends(_require("users:manage")),
+    include_disabled: bool = False,
+) -> dict[str, Any]:
+    """List operator accounts (within the caller's tenant org by default)."""
+    store = get_user_store()
+    if not store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    org_id = actor.get("org_id", "default") if not _is_cross_tenant_admin(actor, None) else None
+    users = store.list_users(org_id=org_id)
+    return {"users": [u.to_dict(include_secret=False) for u in users], "count": len(users)}
+
+
+@app.post("/api/v1/users", tags=["User Management"])
+def create_user(
+    request: Request,
+    body: UserCreateRequest,
+    actor: dict = Depends(_require("users:manage")),
+) -> dict[str, Any]:
+    """Provision a new operator account."""
+    store = get_user_store()
+    if not store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    try:
+        role = UserRole(body.role)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid role: {body.role}")
+    if store.get_by_username(body.username):
+        raise HTTPException(status_code=409, detail="Username already exists.")
+    user = store.create_user(
+        username=body.username,
+        password=body.password,
+        role=role,
         org_id=actor.get("org_id", "default"),
     )
-    return {"access_token": access, "token_type": "bearer"}
+    audit = get_audit()
+    if audit:
+        audit.log(actor=actor["sub"], action="user.create", resource=user.id,
+                  details={"username": user.username, "role": role.value},
+                  org_id=user.org_id,
+                  ip_address=request.client.host if request.client else None)
+    PROMETHEUS_USER_OPS.labels(action="create").inc()
+    return user.to_dict(include_secret=False)
+
+
+@app.put("/api/v1/users/{user_id}", tags=["User Management"])
+def update_user(
+    user_id: str,
+    request: Request,
+    body: UserUpdateRequest,
+    actor: dict = Depends(_require("users:manage")),
+) -> dict[str, Any]:
+    """Update a user's role or active status (cannot deactivate yourself)."""
+    store = get_user_store()
+    if not store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    target = store.get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, target.org_id):
+        raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
+    if user_id == actor.get("user_id") and body.active is False:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
+    updated = store.update_user(
+        user_id=user_id,
+        role=UserRole(body.role) if body.role else None,
+        active=body.active if body.active is not None else None,
+    )
+    audit = get_audit()
+    if audit:
+        audit.log(actor=actor["sub"], action="user.update", resource=user_id,
+                  details={"role": body.role, "active": body.active},
+                  org_id=updated.org_id if updated else actor.get("org_id", "default"),
+                  ip_address=request.client.host if request.client else None)
+    PROMETHEUS_USER_OPS.labels(action="update").inc()
+    return updated.to_dict(include_secret=False) if updated else {}
+
+
+@app.post("/api/v1/users/{user_id}/reset-password", tags=["User Management"])
+def reset_user_password(
+    user_id: str,
+    request: Request,
+    body: PasswordResetRequest,
+    actor: dict = Depends(_require("users:manage")),
+) -> dict[str, Any]:
+    """Admin-forced password reset for an operator account."""
+    store = get_user_store()
+    if not store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    target = store.get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, target.org_id):
+        raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
+    store.reset_password(user_id, body.new_password)
+    if actor["sub"] == target.username:
+        pass
+    audit = get_audit()
+    if audit:
+        audit.log(actor=actor["sub"], action="user.reset_password", resource=user_id,
+                  org_id=target.org_id,
+                  ip_address=request.client.host if request.client else None)
+    return {"success": True}
+
+
+@app.delete("/api/v1/users/{user_id}", tags=["User Management"])
+def delete_user(
+    user_id: str,
+    request: Request,
+    actor: dict = Depends(_require("users:manage")),
+) -> dict[str, Any]:
+    """Delete an operator account and revoke all of its refresh sessions."""
+    store = get_user_store()
+    refresh_store = get_refresh_store()
+    if not store:
+        raise HTTPException(status_code=501, detail="Identity store not available.")
+    target = store.get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user_id == actor.get("user_id"):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    if target.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, target.org_id):
+        raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
+    store.delete_user(user_id)
+    if refresh_store:
+        refresh_store.revoke_all_for_user(user_id)
+    audit = get_audit()
+    if audit:
+        audit.log(actor=actor["sub"], action="user.delete", resource=user_id,
+                  org_id=target.org_id,
+                  ip_address=request.client.host if request.client else None)
+    PROMETHEUS_USER_OPS.labels(action="delete").inc()
+    return {"success": True}
 
 
 # ---------------------------------------------------------------------------
@@ -517,23 +916,25 @@ def list_alerts(
     rule_type: str | None = Query(None, description="Filter: ROGUE_DEVICE, IDENTITY_SPOOFING, etc."),
     actor: dict = Depends(_require("alerts:read")),
 ) -> dict[str, Any]:
-    """Retrieve security incidents with optional filtering and pagination."""
+    """Retrieve security incidents with optional filtering and pagination (tenant-scoped)."""
     repo = get_repo()
-    alerts = repo.get_alerts(limit=limit, offset=offset, severity=severity, rule_type=rule_type)
+    org_id = actor.get("org_id", "default")
+    alerts = repo.get_alerts(limit=limit, offset=offset, severity=severity,
+                             rule_type=rule_type, org_id=org_id)
     return {
         "total_returned": len(alerts),
         "limit": limit,
         "offset": offset,
-        "org_id": actor.get("org_id", "default"),
+        "org_id": org_id,
         "alerts": [a.to_dict() for a in alerts],
     }
 
 
 @app.get("/api/v1/alerts/{alert_id}", tags=["Alerts"])
 def get_alert(alert_id: str, actor: dict = Depends(_require("alerts:read"))) -> dict[str, Any]:
-    """Fetch forensic details for a specific incident by ID."""
+    """Fetch forensic details for a specific incident by ID (tenant-scoped)."""
     repo = get_repo()
-    alert = repo.get_alert_by_id(alert_id)
+    alert = repo.get_alert_by_id(alert_id, org_id=actor.get("org_id", "default"))
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found.")
     return alert.to_dict()
@@ -549,7 +950,7 @@ def execute_mitigation(
     """Execute an active SOAR mitigation action on a security incident."""
     repo = get_repo()
     soar = get_soar()
-    alert = repo.get_alert_by_id(alert_id)
+    alert = repo.get_alert_by_id(alert_id, org_id=actor.get("org_id", "default"))
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found.")
 
@@ -625,12 +1026,13 @@ def list_devices(
     offset: int = Query(0, ge=0),
     actor: dict = Depends(_require("devices:read")),
 ) -> dict[str, Any]:
-    """List provisioned subscribers and their authorized slice assignments."""
+    """List provisioned subscribers and their authorized slice assignments (tenant-scoped)."""
     repo = get_repo()
-    devices = repo.list_all(limit=limit, offset=offset)
+    org_id = actor.get("org_id", "default")
+    devices = repo.list_all(limit=limit, offset=offset, org_id=org_id)
     return {
         "count": len(devices),
-        "org_id": actor.get("org_id", "default"),
+        "org_id": org_id,
         "devices": [
             {
                 "imsi": d.imsi,
@@ -672,6 +1074,7 @@ def add_device(
         status=DeviceStatus(body.status.upper()),
         allowed_slices=slices,
         notes=body.notes,
+        org_id=actor.get("org_id", "default"),
     )
     repo.add(device)
     PROMETHEUS_DEVICES_GAUGE.inc()
@@ -695,8 +1098,13 @@ def delete_device(
     request: Request,
     actor: dict = Depends(_require("devices:delete")),
 ) -> dict[str, Any]:
-    """Remove a subscriber from the authorized inventory."""
+    """Remove a subscriber from the authorized inventory (tenant-scoped)."""
     repo = get_repo()
+    existing = repo.get_by_imsi(imsi)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Device IMSI '{imsi}' not found.")
+    if existing.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, existing.org_id):
+        raise HTTPException(status_code=403, detail="Cannot delete devices of another tenant.")
     deleted = repo.delete(imsi)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Device IMSI '{imsi}' not found.")
@@ -727,6 +1135,7 @@ def ingest_event(
     engine = get_engine()
     repo = get_repo()
     correlation = get_correlation()
+    org_id = actor.get("org_id", "default")
     PROMETHEUS_PACKETS_TOTAL.inc()
 
     event = ParsedSignalingEvent(
@@ -746,7 +1155,7 @@ def ingest_event(
     incidents = []
 
     for alert in alerts:
-        repo.record_alert(alert)
+        repo.record_alert(alert, org_id=org_id)
         PROMETHEUS_ALERTS_TOTAL.labels(
             rule_type=alert.rule_type.value,
             severity=alert.severity.value,
@@ -797,3 +1206,13 @@ def get_audit_log(
         limit=limit,
     )
     return {"count": len(entries), "entries": entries}
+
+
+@app.get("/api/v1/audit/verify", tags=["Audit"])
+def verify_audit_chain(actor: dict = Depends(_require("audit:read"))) -> dict[str, Any]:
+    """Verify the tamper-evidence hash chain across the full audit log."""
+    audit = get_audit()
+    if not audit:
+        raise HTTPException(status_code=501, detail="Audit log not available.")
+    valid, broken, total = audit.verify_chain()
+    return {"valid": valid, "broken_entries": broken, "total_entries": total}

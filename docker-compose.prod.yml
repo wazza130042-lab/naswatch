@@ -1,40 +1,31 @@
-# NASWatch — Full Production Stack
-# Includes: PostgreSQL, Redis, Prometheus, Grafana, API, UI
+# NASWatch — Production Stack
+# Services: Caddy TLS edge, API, UI, PostgreSQL, Prometheus, Grafana.
+# The app auto-selects PostgreSQL when NASWATCH_DB_URL is set, otherwise it
+# persists to SQLite (./data volume). All external traffic enters HTTPS via
+# Caddy (ports 80/443); API and UI are internal-only.
 # Usage: docker-compose -f docker-compose.prod.yml up -d --build
+#        docker-compose -f docker-compose.prod.yml logs -f caddy
 
 version: "3.9"
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: naswatch-postgres
+  caddy:
+    image: caddy:2-alpine
+    container_name: naswatch-caddy
     restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
     environment:
-      POSTGRES_DB: naswatch
-      POSTGRES_USER: naswatch
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+      - NASWATCH_FQDN=${NASWATCH_FQDN:-localhost}
+      - NASWATCH_TLS_MODE=${NASWATCH_TLS_MODE:-internal}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U naswatch"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - naswatch_net
-
-  redis:
-    image: redis:7-alpine
-    container_name: naswatch-redis
-    restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:-change-me-in-production}
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - naswatch-api
+      - naswatch-ui
     networks:
       - naswatch_net
 
@@ -44,26 +35,48 @@ services:
       dockerfile: Dockerfile
     container_name: naswatch-api
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
-      - NASWATCH_DB_URL=postgresql://naswatch:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/naswatch
-      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:-change-me-in-production}
+      - NASWATCH_DB_URL=${NASWATCH_DB_URL:-postgresql://naswatch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/naswatch}
+      - NASWATCH_DB_PATH=/app/data/inventory.db
+      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:?Set NASWATCH_JWT_SECRET in .env}
       - NASWATCH_LICENSE_KEY=${NASWATCH_LICENSE_KEY:-}
+      - NASWATCH_ADMIN_EMAIL=${NASWATCH_ADMIN_EMAIL:-admin@naswatch.io}
+      - NASWATCH_ADMIN_PASSWORD=${NASWATCH_ADMIN_PASSWORD:?Set NASWATCH_ADMIN_PASSWORD in .env}
+      - NASWATCH_FLOOD_THRESHOLD=${NASWATCH_FLOOD_THRESHOLD:-10}
+      - NASWATCH_FLOOD_WINDOW_SECONDS=${NASWATCH_FLOOD_WINDOW_SECONDS:-60}
+      - NASWATCH_CORS_ORIGINS=${NASWATCH_CORS_ORIGINS:-https://${NASWATCH_FQDN:-localhost}}
       - PAGERDUTY_INTEGRATION_KEY=${PAGERDUTY_INTEGRATION_KEY:-}
       - SPLUNK_HEC_URL=${SPLUNK_HEC_URL:-}
       - SPLUNK_HEC_TOKEN=${SPLUNK_HEC_TOKEN:-}
       - SENTINEL_WORKSPACE_ID=${SENTINEL_WORKSPACE_ID:-}
       - SENTINEL_SHARED_KEY=${SENTINEL_SHARED_KEY:-}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-in-production}@redis:6379/0
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       - ./data:/app/data
-    command: uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000 --workers 4
+    # Single worker by default: SQLite allows one writer. Scale up with
+    # NASWATCH_WORKERS > 1 ONLY when NASWATCH_DB_URL points at PostgreSQL.
+    command: uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000 --workers ${NASWATCH_WORKERS:-1}
+    depends_on:
+      - db
+    networks:
+      - naswatch_net
+
+  db:
+    image: postgres:16-alpine
+    container_name: naswatch-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=naswatch
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=naswatch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U naswatch -d naswatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - naswatch_net
 
@@ -73,11 +86,11 @@ services:
       dockerfile: Dockerfile
     container_name: naswatch-ui
     restart: unless-stopped
-    ports:
-      - "8501:8501"
+    expose:
+      - "8501"
     environment:
-      - NASWATCH_API_URL=http://naswatch-api:8000
-      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:-change-me-in-production}
+      - NASWATCH_API_URL=https://${NASWATCH_FQDN:-localhost}/api
+      - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:?Set NASWATCH_JWT_SECRET in .env}
     depends_on:
       - naswatch-api
     command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
@@ -109,7 +122,7 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-me-in-production}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=http://localhost:3000
       - GF_ANALYTICS_REPORTING_ENABLED=false
@@ -123,10 +136,11 @@ services:
       - naswatch_net
 
 volumes:
-  postgres_data:
-  redis_data:
   prometheus_data:
   grafana_data:
+  postgres_data:
+  caddy_data:
+  caddy_config:
 
 networks:
   naswatch_net:

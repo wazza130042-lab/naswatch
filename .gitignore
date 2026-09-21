@@ -33,6 +33,9 @@ ENV/
 # Data and SQLite
 data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/alerts.jsonl
 data/pcaps/*.pcap
 !data/.gitkeep
 !data/pcaps/.gitkeep

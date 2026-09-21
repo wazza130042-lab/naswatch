@@ -54,57 +54,76 @@ def verify_password(plain: str, hashed: str) -> bool:
             salt, stored_hash = parts[1], parts[2]
             computed = hashlib.sha256((salt + plain).encode()).hexdigest()
             return hmac.compare_digest(computed, stored_hash)
-    if plain == hashed:
-        return True
     return False
 
 
-def create_access_token(subject: str, role: str, org_id: str, expires_delta: Optional[timedelta] = None) -> str:
+def _jwt_claims(
+    subject: str,
+    role: str,
+    org_id: str,
+    token_type: str,
+    user_id: str | None,
+    jti: str | None,
+) -> dict:
+    claims = {
+        "sub": subject,
+        "role": role,
+        "org_id": org_id,
+        "type": token_type,
+        "iat": datetime.now(UTC),
+    }
+    if user_id:
+        claims["user_id"] = user_id
+    if jti:
+        claims["jti"] = jti
+    return claims
+
+
+def _encode(payload: dict) -> str:
+    """Encode a payload as a JWT (PyJWT when available, pure-Python fallback otherwise)."""
+    if _HAS_PYJWT:
+        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    import base64
+    import json
+
+    header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, default=str).encode()).decode().rstrip("=")
+    sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
+
+
+def create_access_token(
+    subject: str,
+    role: str,
+    org_id: str,
+    expires_delta: Optional[timedelta] = None,
+    user_id: str | None = None,
+) -> str:
     """Create a short-lived JWT access token."""
     expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    payload = {
-        "sub": subject,
-        "role": role,
-        "org_id": org_id,
-        "exp": expire,
-        "type": "access",
-        "iat": datetime.now(UTC),
-    }
+    payload = _jwt_claims(subject, role, org_id, "access", user_id, None)
+    payload["exp"] = expire
     if _HAS_PYJWT:
         return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    import base64
-    import json
-    header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+
     payload["exp"] = int(expire.timestamp())
-    payload["iat"] = int(datetime.now(UTC).timestamp())
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
-    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
-    return f"{header_b64}.{payload_b64}.{sig_b64}"
+    payload["iat"] = int(payload["iat"].timestamp())
+    return _encode(payload)
 
 
-def create_refresh_token(subject: str, role: str, org_id: str) -> str:
-    """Create a long-lived JWT refresh token."""
+def create_refresh_token(subject: str, role: str, org_id: str, user_id: str | None = None) -> str:
+    """Create a long-lived JWT refresh token carrying a unique jti for rotation/revocation."""
     expire = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {
-        "sub": subject,
-        "role": role,
-        "org_id": org_id,
-        "exp": expire,
-        "type": "refresh",
-        "iat": datetime.now(UTC),
-    }
+    jti = secrets.token_urlsafe(32)
+    payload = _jwt_claims(subject, role, org_id, "refresh", user_id, jti)
+    payload["exp"] = expire
     if _HAS_PYJWT:
         return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    import base64
-    import json
-    header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+
     payload["exp"] = int(expire.timestamp())
-    payload["iat"] = int(datetime.now(UTC).timestamp())
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
-    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
-    return f"{header_b64}.{payload_b64}.{sig_b64}"
+    payload["iat"] = int(payload["iat"].timestamp())
+    return _encode(payload)
 
 
 def decode_token(token: str) -> dict:

@@ -1,0 +1,54 @@
+# NASWatch TLS edge (Caddy 2)
+#
+# Stable production setup:
+#   NASWATCH_FQDN=naswatch.example.com   (public DNS -> this host)
+#   NASWATCH_TLS_MODE=                    (empty => automatic Let's Encrypt certs)
+#
+# Local/trial setup (self-signed):
+#   NASWATCH_FQDN=localhost
+#   NASWATCH_TLS_MODE=internal
+#
+# See .env.example for the full variable reference.
+
+{$NASWATCH_FQDN}:443 {
+	encode gzip zstd
+
+	tls {$NASWATCH_TLS_MODE:internal}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'self'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+	}
+
+	# API and operational endpoints
+	handle /api/* {
+		reverse_proxy naswatch-api:8000
+	}
+	handle /health {
+		reverse_proxy naswatch-api:8000
+	}
+	handle /metrics {
+		reverse_proxy naswatch-api:8000
+	}
+	# Everything else -> dashboard
+	handle {
+		reverse_proxy naswatch-ui:8501
+	}
+
+	# Trust X-Forwarded-For/Accept-Encoding from the reverse proxy
+	request_header X-Forwarded-Proto https
+
+	log {
+		output stdout
+		format console
+		level info
+	}
+}
+
+:80 {
+	redir https://{$NASWATCH_FQDN}{uri} permanent
+}

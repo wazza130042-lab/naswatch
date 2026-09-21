@@ -45,9 +45,6 @@ class CorrelatedIncident:
         self.escalated: bool = self._check_escalation()
         self.severity: AlertSeverity = self._compute_severity()
 
-    def _check_escalation() -> bool:
-        pass
-
     def _check_escalation(self) -> bool:
         """Check if this incident matches a known escalation chain."""
         for rule_a, rule_b in ESCALATION_CHAINS:

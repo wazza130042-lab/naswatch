@@ -1,7 +1,7 @@
-# Open5GS AMF (Access and Mobility Management Function) Configuration
-# Reference configuration for 5G Core testbed
+# Open5GS AMF Configuration for NASWatch 5G Testbed
 logger:
-  file: /var/log/open5gs/amf.log
+  file:
+    path: /home/megbaru/open5gs/install/var/log/open5gs/amf.log
   level: info
 
 amf:
@@ -40,7 +40,11 @@ amf:
           sd: 000003
   security:
     integrity_order: [ NIA2, NIA1, NIA0 ]
-    ciphering_order: [ NEA0, NEA1, NEA2 ]
+    ciphering_order: [ NEA2, NEA1, NEA0 ]
   network_name:
     full: "Open5GS-Lab-5G"
     short: "5G-Lab"
+  amf_name: open5gs-amf0
+  time:
+    t3512:
+      value: 540
