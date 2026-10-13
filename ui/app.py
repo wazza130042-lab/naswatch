@@ -52,7 +52,7 @@ def _render_settings_menu(username: str, role: str) -> None:
     rc = role_colors.get(role, "var(--text-2)")
     rh = role_hex.get(role, "139,147,163")
 
-    with st.popover("", icon=":material/settings:", help="Settings", use_container_width=True):
+    with st.popover("", icon=":material/settings:", help="Settings"):
         st.markdown(
             f"""
             <div style="display:flex; align-items:center; gap:9px; padding:8px 10px;
@@ -111,7 +111,7 @@ def main() -> None:
     page_slug = page.lower().replace(" ", "-")
     with st.container(key="command-bar", border=False):
         crumb, scope_time_col, scope_search_col, status_col, settings_col = st.columns(
-            [1.10, 0.70, 1.12, 0.48, 0.14], gap="small", vertical_alignment="center"
+            [1.10, 0.70, 1.12, 0.48, 0.26], gap="small", vertical_alignment="center"
         )
         with crumb:
             st.markdown(

@@ -531,6 +531,27 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 }
 .st-key-command-bar .stTextInput input { padding:0 12px !important; }
 .st-key-command-bar [data-baseweb="select"] * { color:#D6E7FA !important; }
+
+/* Settings: a single right-aligned gear icon button (pinned to a 36px box so the
+   icon and the dropdown chevron can never collide in a narrow column). */
+.st-key-command-bar [data-testid="stColumn"]:last-child {
+  flex:0 0 36px !important; width:36px !important; min-width:36px !important;
+}
+.st-key-command-bar [data-testid="stPopover"] { width:100% !important; }
+.st-key-command-bar [data-testid="stPopoverButton"] {
+  width:36px !important; min-width:36px !important; height:36px !important; min-height:36px !important;
+  padding:0 !important; justify-content:center !important;
+  border:1px solid #16518D !important; border-radius:6px !important;
+  background:#030B16 !important; color:#9FC4EA !important;
+}
+.st-key-command-bar [data-testid="stPopoverButton"]:hover {
+  border-color:#258CFF !important; background:#061226 !important; color:#E6F1FF !important;
+}
+/* the inner flex container carries a -5px right margin for the chevron slot;
+   reset it so the lone gear sits dead centre in the square */
+.st-key-command-bar [data-testid="stPopoverButton"] > div { margin:0 !important; gap:0 !important; }
+/* hide the popover's auto chevron so the control stays a clean square icon */
+.st-key-command-bar [data-testid="stPopoverButton"] > div > div[aria-hidden="true"] { display:none !important; }
 .page-head { margin:0 0 16px !important; padding-top:0 !important; }
 .page-title { font:700 23px/1.25 var(--mono) !important; letter-spacing:0 !important; color:#F1F7FF !important; }
 .page-sub { font:12px/1.55 var(--mono) !important; color:#779CC4 !important; max-width:820px; }
