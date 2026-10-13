@@ -40,7 +40,10 @@ def render_sidebar(repo):
         st.markdown('<div class="nav-section-label">SOC WORKSPACE</div>', unsafe_allow_html=True)
         pages = ["Overview", "Event search", "Incidents", "Network topology", "Asset inventory", "Reports"]
         admin_pages = ["User management"] if has("users") else []
-        if st.session_state.current_page not in pages + admin_pages:
+        # Account pages are reachable from the top-corner settings menu, not the
+        # sidebar, so they are valid destinations that must not be reset.
+        account_pages = ["Security"]
+        if st.session_state.current_page not in pages + admin_pages + account_pages:
             st.session_state.current_page = "Overview"
         for nav_index, nav_page in enumerate(pages, start=1):
             if st.button(

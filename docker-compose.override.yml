@@ -11,6 +11,13 @@
 #   docker compose -f docker-compose.yml up -d
 #
 services:
+  naswatch-api:
+    # Mirror the UI: run the working-tree source instead of the baked copy so
+    # detector/identity changes apply without `docker compose build`.
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+
   naswatch-ui:
     volumes:
       - ./ui:/app/ui

@@ -35,6 +35,14 @@ class _Dialect(SqlBackend):
     """Backward-compatible alias for the shared SQL backend adapter."""
 
 
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a sqlite3.Row or a dict-like row, with a fallback."""
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 class UserStore:
     """Operator account registry with bcrypt password storage."""
 
@@ -53,11 +61,51 @@ class UserStore:
                 org_id TEXT NOT NULL DEFAULT 'default',
                 active INTEGER NOT NULL DEFAULT 1,
                 must_change_password INTEGER NOT NULL DEFAULT 0,
+                totp_secret TEXT,
+                totp_enabled INTEGER NOT NULL DEFAULT 0,
+                totp_enrolled_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
         """)
+        self._migrate_totp()
+
+    def _existing_columns(self) -> set[str]:
+        """Return the current column names of the users table."""
+        if getattr(self.dialect, "pg", False):
+            conn, cur = self.dialect.execute(
+                "SELECT column_name AS name FROM information_schema.columns "
+                "WHERE table_name = ?",
+                ("users",),
+            )
+        else:
+            conn, cur = self.dialect.execute("PRAGMA table_info(users)")
+        try:
+            rows = cur.fetchall()
+        finally:
+            self.dialect.close(conn)
+        names: set[str] = set()
+        for row in rows:
+            try:
+                names.add(row["name"])
+            except (KeyError, IndexError, TypeError):
+                names.add(row[1])
+        return names
+
+    def _migrate_totp(self) -> None:
+        """Add the TOTP columns to an existing install (safe to run every boot)."""
+        existing = self._existing_columns()
+        for column, column_type in (
+            ("totp_secret", "TEXT"),
+            ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("totp_enrolled_at", "TEXT"),
+        ):
+            if column not in existing:
+                self.dialect.executescript(
+                    f"ALTER TABLE users ADD COLUMN {column} {column_type}"
+                )
+                logger.info("Migrated users table: added column %s", column)
 
     def ensure_default_admin(self) -> None:
         """Bootstrap the initial administrator account if no users exist."""
@@ -75,6 +123,7 @@ class UserStore:
         )
 
     def _row_to_user(self, row: Any) -> User:
+        enrolled = _row_get(row, "totp_enrolled_at")
         return User(
             id=row["id"],
             username=row["username"],
@@ -85,6 +134,11 @@ class UserStore:
             must_change_password=bool(row["must_change_password"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            totp_secret=_row_get(row, "totp_secret"),
+            totp_enabled=bool(_row_get(row, "totp_enabled", 0)),
+            totp_enrolled_at=(
+                datetime.fromisoformat(enrolled) if enrolled else None
+            ),
         )
 
     def create_user(self, username: str, password: str, role: UserRole, org_id: str = "default") -> User:
@@ -181,6 +235,47 @@ class UserStore:
         self.dialect.close(conn)
         logger.info("Password reset applied for user id=%s", user_id)
         return True
+
+    # ── TOTP second factor ────────────────────────────────────────────
+    def set_totp_secret(self, user_id: str, secret: str) -> None:
+        """Stage a TOTP secret for an account without switching the factor on.
+
+        The operator must prove possession (submit a valid code) before the
+        factor is armed via :meth:`enable_totp`.
+        """
+        conn, _ = self.dialect.execute(
+            "UPDATE users SET totp_secret = ?, totp_enabled = 0, totp_enrolled_at = NULL, "
+            "updated_at = ? WHERE id = ?",
+            (secret, datetime.now(UTC).isoformat(), user_id),
+        )
+        self.dialect.commit(conn)
+        self.dialect.close(conn)
+        logger.info("Staged TOTP enrollment for user id=%s", user_id)
+
+    def enable_totp(self, user_id: str) -> bool:
+        """Confirm a staged secret and switch the second factor on."""
+        conn, cur = self.dialect.execute(
+            "UPDATE users SET totp_enabled = 1, totp_enrolled_at = ?, updated_at = ? "
+            "WHERE id = ? AND totp_secret IS NOT NULL",
+            (datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat(), user_id),
+        )
+        self.dialect.commit(conn)
+        rowcount = cur.rowcount if hasattr(cur, "rowcount") else 0
+        self.dialect.close(conn)
+        if rowcount:
+            logger.warning("TOTP second factor enabled for user id=%s", user_id)
+        return rowcount > 0
+
+    def disable_totp(self, user_id: str) -> None:
+        """Remove the stored secret and switch the second factor off."""
+        conn, _ = self.dialect.execute(
+            "UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_enrolled_at = NULL, "
+            "updated_at = ? WHERE id = ?",
+            (datetime.now(UTC).isoformat(), user_id),
+        )
+        self.dialect.commit(conn)
+        self.dialect.close(conn)
+        logger.warning("TOTP second factor disabled for user id=%s", user_id)
 
     def delete_user(self, user_id: str) -> bool:
         conn, cur = self.dialect.execute("DELETE FROM users WHERE id = ?", (user_id,))

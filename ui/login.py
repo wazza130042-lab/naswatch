@@ -1,12 +1,157 @@
-"""Operator login screen."""
+"""Operator login screen (password + optional TOTP second factor)."""
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from html import escape
 
 import streamlit as st
 
+from naswatch.auth import totp
 from ui.store import get_user_store
 from ui.theme import CSS
+
+# How long the pending second-factor prompt stays usable, and how many wrong
+# codes we accept before making the operator start the login again.
+_SECOND_FACTOR_TTL_SECONDS = 300
+_SECOND_FACTOR_MAX_ATTEMPTS = 5
+
+
+def _sign_in(user) -> None:
+    """Open the operator session for ``user`` and rerun into the console."""
+    st.session_state["user"] = {
+        "id": user.id, "username": user.username,
+        "role": user.role.value, "org_id": user.org_id,
+    }
+    # Persist the session so a refresh keeps the operator signed in.
+    st.session_state["_persist_session"] = True
+    st.session_state.pop("_pending_2fa", None)
+    st.session_state.pop("login_totp_code", None)
+    st.session_state.pop("login_password", None)
+    st.rerun()
+
+
+def _start_second_factor(user) -> None:
+    """Park a verified password until the operator proves the TOTP factor."""
+    st.session_state["_pending_2fa"] = {
+        "user_id": user.id,
+        "username": user.username,
+        "started": time.time(),
+        "attempts": 0,
+    }
+    # Never leave the first-factor password in the session once it is checked.
+    st.session_state.pop("login_password", None)
+    st.rerun()
+
+
+def _second_factor_pending() -> bool:
+    pending = st.session_state.get("_pending_2fa")
+    if not isinstance(pending, dict):
+        return False
+    if time.time() - float(pending.get("started", 0)) > _SECOND_FACTOR_TTL_SECONDS:
+        st.session_state.pop("_pending_2fa", None)
+        return False
+    return True
+
+
+def _render_first_factor() -> None:
+    with st.form("operator_login", clear_on_submit=False):
+        username = st.text_input("> login", value="admin@naswatch.io", autocomplete="username")
+        password = st.text_input(
+            "> password",
+            type="password",
+            placeholder="********",
+            autocomplete="current-password",
+            key="login_password",
+        )
+        submitted = st.form_submit_button("> AUTHENTICATE", use_container_width=True, type="primary")
+    if not submitted:
+        return
+    if not username or not password:
+        st.error("Enter your email and password to continue.")
+        return
+    store = get_user_store()
+    if store is None:
+        st.error("Authentication service is unavailable. Please try again shortly.")
+        return
+    user = store.authenticate(username, password)
+    if user is None:
+        st.error("We couldn't sign you in with those credentials.")
+        return
+    if user.totp_enabled and user.totp_secret:
+        _start_second_factor(user)
+    else:
+        _sign_in(user)
+
+
+def _render_second_factor() -> None:
+    pending = st.session_state.get("_pending_2fa") or {}
+    username = pending.get("username", "")
+    store = get_user_store()
+    user = store.get_by_id(pending["user_id"]) if store and pending.get("user_id") else None
+    if not user or not user.active or not user.totp_enabled or not user.totp_secret:
+        st.session_state.pop("_pending_2fa", None)
+        st.error("This account no longer has two-factor authentication enabled. Please sign in again.")
+        return
+
+    server_time = datetime.now(UTC).strftime("%H:%M:%S")
+    st.markdown(
+        '<div class="auth-heading">[ SECOND FACTOR ]</div>'
+        f'<div class="auth-copy">Enter the 6-digit code for <b>{escape(username)}</b>.</div>'
+        f'<div class="auth-copy" style="font-size:11px;">server {server_time} UTC &middot; codes refresh every 30s '
+        '&middot; keep your device clock in sync</div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("operator_totp", clear_on_submit=True):
+        code = st.text_input(
+            "> 2FA code", max_chars=6, placeholder="123456",
+            autocomplete="one-time-code", key="login_totp_code",
+        )
+        submitted = st.form_submit_button("> VERIFY", use_container_width=True, type="primary")
+
+    if st.button("← Back", key="totp_back", use_container_width=True):
+        st.session_state.pop("_pending_2fa", None)
+        st.rerun()
+
+    if not submitted:
+        return
+    if totp.verify(user.totp_secret, code):
+        _sign_in(user)
+        return
+    attempts = int(pending.get("attempts", 0)) + 1
+    pending["attempts"] = attempts
+    st.session_state["_pending_2fa"] = pending
+    remaining = _SECOND_FACTOR_MAX_ATTEMPTS - attempts
+    if remaining <= 0:
+        st.session_state.pop("_pending_2fa", None)
+        st.session_state.pop("login_totp_code", None)
+        st.error("Too many incorrect codes. Please sign in again.")
+    else:
+        st.error(f"That code isn't valid. {remaining} attempt{'s' if remaining != 1 else ''} left.")
+
+
+def _render_demo_users() -> None:
+    st.markdown(
+        '<div class="demo-users"><div class="demo-heading"><span style="color:#22D3EE">$</span> cat demo_users</div>'
+        '<div class="demo-row"><span>admin@naswatch.io</span><span class="demo-role">admin</span></div>'
+        '<div class="demo-row"><span>analyst@naswatch.io</span><span class="demo-role">analyst</span></div>'
+        '<div class="demo-row"><span>viewer@naswatch.io</span><span class="demo-role">viewer</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_auth_column() -> None:
+    """Password step, or the TOTP step when a password has been verified."""
+    if _second_factor_pending():
+        _render_second_factor()
+    else:
+        st.markdown(
+            '<div class="auth-heading">[ OPERATOR AUTHENTICATION ]</div>'
+            '<div class="auth-copy">Sign in to open the security console.</div>',
+            unsafe_allow_html=True,
+        )
+        _render_first_factor()
+    _render_demo_users()
 
 
 def login_page():
@@ -160,6 +305,7 @@ def login_page():
         r"| |\  |/ ___ \ ___) | \ V  V / (_| | || (__| | | |",
         r"|_| \_/_/   \_\____/   \_/\_/ \__,_|\__\___|_| |_|",
     ])
+    awaiting_2fa = _second_factor_pending()
     with st.container(key="auth-terminal", border=False):
         st.markdown(
             '<div class="terminal-chrome"><i class="chrome-dot"></i><i class="chrome-dot"></i>'
@@ -175,52 +321,13 @@ def login_page():
                 '<div class="terminal-subtitle">5G control-plane security // blue team console</div>'
                 '<div class="stream-heading"><span>$ tail -f nas-events.log</span><span>SAMPLE STREAM</span></div>'
                 f'<div class="event-stream">{events_html}</div>'
-                '<div class="terminal-prompt">$ <span>awaiting operator login</span>'
-                '<span class="cur"></span></div></div>',
+                '<div class="terminal-prompt">$ <span>'
+                + ("awaiting authenticator code" if awaiting_2fa else "awaiting operator login")
+                + '</span><span class="cur"></span></div></div>',
                 unsafe_allow_html=True,
             )
         with right:
-            st.markdown(
-                '<div class="auth-heading">[ OPERATOR AUTHENTICATION ]</div>'
-                '<div class="auth-copy">Sign in to open the security console.</div>',
-                unsafe_allow_html=True,
-            )
-            with st.form("operator_login", clear_on_submit=False):
-                username = st.text_input("> login", value="admin@naswatch.io", autocomplete="username")
-                password = st.text_input(
-                    "> password",
-                    type="password",
-                    placeholder="********",
-                    autocomplete="current-password",
-                    key="login_password",
-                )
-                submitted = st.form_submit_button("> AUTHENTICATE", use_container_width=True, type="primary")
-            if submitted:
-                if not username or not password:
-                    st.error("Enter your email and password to continue.")
-                else:
-                    store = get_user_store()
-                    if store is None:
-                        st.error("Authentication service is unavailable. Please try again shortly.")
-                    else:
-                        user = store.authenticate(username, password)
-                        if user is None:
-                            st.error("We couldn't sign you in with those credentials.")
-                        else:
-                            st.session_state["user"] = {
-                                "id": user.id, "username": user.username,
-                                "role": user.role.value, "org_id": user.org_id,
-                            }
-                            # Persist the session so a refresh keeps the operator signed in.
-                            st.session_state["_persist_session"] = True
-                            st.rerun()
-            st.markdown(
-                '<div class="demo-users"><div class="demo-heading"><span style="color:#22D3EE">$</span> cat demo_users</div>'
-                '<div class="demo-row"><span>admin@naswatch.io</span><span class="demo-role">admin</span></div>'
-                '<div class="demo-row"><span>analyst@naswatch.io</span><span class="demo-role">analyst</span></div>'
-                '<div class="demo-row"><span>viewer@naswatch.io</span><span class="demo-role">viewer</span></div></div>',
-                unsafe_allow_html=True,
-            )
+            _render_auth_column()
         st.markdown(
             '<div class="terminal-footer"><span>[0] auth*</span><span>session: unauthenticated</span><span>NASWatch</span></div>',
             unsafe_allow_html=True,

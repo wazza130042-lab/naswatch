@@ -30,6 +30,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from naswatch.auth import totp
 from naswatch.auth.oidc import OIDCProvider
 from naswatch.detection.engine import DetectionEngine
 from naswatch.mitigation.soar import SOAREngine
@@ -410,6 +411,9 @@ def _is_cross_tenant_admin(actor: dict, target_org: str | None) -> bool:
 class LoginRequest(BaseModel):
     username: str = Field(..., description="Username (email or username)")
     password: str = Field(..., description="Account password")
+    totp_code: str | None = Field(
+        None, description="6-digit authenticator code; required when 2FA is enabled"
+    )
 
 
 class OIDCAssertRequest(BaseModel):
@@ -570,6 +574,16 @@ def login(request: Request, body: LoginRequest) -> TokenResponse:
             detail="Invalid credentials.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Accounts with TOTP 2FA must also present a current authenticator code.
+    if user.totp_enabled:
+        if not totp.verify(user.totp_secret, body.totp_code):
+            PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="password").inc()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="A valid two-factor authentication code is required.",
+                headers={"WWW-Authenticate": "Bearer", "X-NASWatch-2FA": "required"},
+            )
 
     access = create_access_token(
         subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id

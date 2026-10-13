@@ -173,6 +173,11 @@ class User:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
     must_change_password: bool = False
+    # TOTP second factor (RFC 6238). The secret is only materialised while
+    # enrollment is pending or when the factor is switched on.
+    totp_secret: str | None = None
+    totp_enabled: bool = False
+    totp_enrolled_at: datetime | None = None
 
     def to_dict(self, include_secret: bool = False) -> dict[str, Any]:
         data = {
@@ -182,9 +187,12 @@ class User:
             "org_id": self.org_id,
             "active": self.active,
             "must_change_password": self.must_change_password,
+            "totp_enabled": self.totp_enabled,
+            "totp_enrolled_at": self.totp_enrolled_at.isoformat() if self.totp_enrolled_at else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
         if include_secret:
             data["password_hash"] = self.password_hash
+            data["totp_secret"] = self.totp_secret
         return data

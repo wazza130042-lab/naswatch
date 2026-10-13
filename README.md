@@ -119,6 +119,15 @@ flowchart TD
 - **SSO / OIDC (Enterprise):** External identity providers (Keycloak, Entra ID, Okta, Auth0) via
   OpenID discovery + JWKS signature validation. Operator accounts are auto-provisioned from token
   claims, and `NASWATCH_OIDC_ENFORCED=true` disables password login org-wide.
+- **Two-Factor Authentication (TOTP):** Optional, self-service RFC 6238 time-based one-time passwords
+  that work with any authenticator app (Google Authenticator, Authy, 1Password, FreeOTP…). Enrol from
+  **Settings ⚙ → Security** (scan the QR or enter the setup key), then sign in with password **+** a
+  6-digit code. Codes are validated with a ±30 s drift window to tolerate clock skew; accounts that
+  are not enrolled still sign in with a password only. Admins can reset an operator's 2FA from
+  **Settings ⚙ → User management**; disabling your own 2FA requires the account password. The API's
+  `POST /api/v1/auth/login` enforces the same second factor via the `totp_code` field. The TOTP
+  algorithm is stdlib-only (`src/naswatch/auth/totp.py`); QR rendering uses the pure-Python `segno`
+  package and degrades to a manual setup key when it is unavailable.
 - **M2M API Keys:** SHA-256 hashed API keys (`nw_...`) for automated probes and external AMF agents.
 - **Role-Based Access Control (RBAC):**
   - `admin`: Full system control, device management, API keys, user administration, and audit inspection.

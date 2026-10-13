@@ -29,6 +29,8 @@ docker compose ps          # naswatch-api, naswatch-ui, naswatch-prometheus heal
 ```
 
 Open the dashboard: <http://localhost:8501> and sign in as `admin@naswatch.io`.
+If the account has two-factor authentication enrolled (**Settings ⚙ → Security**), the login form
+asks for the 6-digit authenticator-app code after the password.
 
 > **Why root?** Sending raw/SCTP frames and sniffing the interface both need the
 > `NET_RAW` capability. The containers run as an unprivileged user, so the

@@ -113,6 +113,7 @@ def render(ctx):
                     "Role": u.role.value,
                     "Tenant": u.org_id,
                     "Status": "active" if u.active else "disabled",
+                    "2FA": "on" if u.totp_enabled else "off",
                     "Created (UTC)": u.created_at.strftime("%Y-%m-%d %H:%M"),
                 } for u in accounts]), hide_index=True, use_container_width=True)
 
@@ -163,4 +164,23 @@ def render(ctx):
                             st.session_state.pop(f"user_pw_{target.id}", None)
                             st.toast(f"Password reset for {target.username}")
                             st.rerun()
+
+                with st.expander("Two-factor authentication"):
+                    if target.totp_enabled:
+                        st.caption(
+                            "Enabled — this operator must enter a code from their authenticator "
+                            "app when signing in. Reset only if they lose the device."
+                        )
+                        if st.button(
+                            "Reset 2FA", use_container_width=True,
+                            key=f"user_totp_reset_{target.id}",
+                        ):
+                            store.disable_totp(target.id)
+                            st.toast(f"Two-factor reset for {target.username}")
+                            st.rerun()
+                    else:
+                        st.caption(
+                            "Not enabled. The operator can arm it themselves from "
+                            "Settings → Security."
+                        )
 

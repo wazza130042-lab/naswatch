@@ -18,3 +18,5 @@ slowapi>=0.1.9
 prometheus-client>=0.20.0
 httpx>=0.27.0
 psycopg[binary]>=3.1.0
+# QR rendering for authenticator-app 2FA enrollment (pure Python, no native deps)
+segno>=1.6.1

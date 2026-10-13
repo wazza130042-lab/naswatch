@@ -27,7 +27,7 @@ import streamlit as st
 st.set_page_config(page_title="NASWatch", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
 from ui.login import login_page
-from ui.views import event_search, incidents, inventory, overview, reports, topology, users
+from ui.views import event_search, incidents, inventory, overview, reports, security, topology, users
 from ui.rbac import has
 from ui.session import (
     _clear_session_cookie,
@@ -68,6 +68,9 @@ def _render_settings_menu(username: str, role: str) -> None:
             """,
             unsafe_allow_html=True,
         )
+        if st.button("Security", use_container_width=True, key="settings_security"):
+            st.session_state.current_page = "Security"
+            st.rerun()
         if has("users"):
             if st.button("User management", use_container_width=True, key="settings_users"):
                 st.session_state.current_page = "User management"
@@ -189,7 +192,9 @@ def main() -> None:
         "crit_count": crit_count, "high_count": high_count, "med_count": med_count,
         "soar": soar,
     }
-    if page == "Overview":
+    if page == "Security":
+        security.render(ctx)
+    elif page == "Overview":
         overview.render(ctx)
     elif page == "Event search":
         event_search.render(ctx)

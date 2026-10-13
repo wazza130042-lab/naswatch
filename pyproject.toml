@@ -46,6 +46,8 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=4.0,<4.1",
+    # QR codes for authenticator-app 2FA enrollment (pure Python)
+    "segno>=1.6.1",
     # Rate limiting
     "slowapi>=0.1.9",
     # Metrics
