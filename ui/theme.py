@@ -517,6 +517,16 @@ section[data-testid="stSidebar"] .stButton > button:hover {
   background:rgba(3,11,22,.97) !important; border-bottom:1px solid #102E50 !important;
   backdrop-filter:blur(14px);
 }
+/* The Streamlit header/toolbar is a full-width, transparent layer at z-index
+   999990 laid over the top ~60px of the page. It was swallowing every click on
+   the command bar (time range, global search and the settings gear all reported
+   unreachable). Let clicks fall through the empty header while its own controls
+   (Deploy, menu) stay clickable. */
+header[data-testid="stHeader"],
+header[data-testid="stHeader"] [data-testid="stToolbar"] { pointer-events:none !important; }
+header[data-testid="stHeader"] button,
+header[data-testid="stHeader"] a,
+header[data-testid="stHeader"] [role="button"] { pointer-events:auto !important; }
 .st-key-command-bar [data-testid="stVerticalBlock"] { gap:0 !important; }
 .st-key-command-bar [data-testid="stHorizontalBlock"] { align-items:center !important; }
 .soc-crumb { color:#BED3EA; font-size:12px; white-space:nowrap; }
