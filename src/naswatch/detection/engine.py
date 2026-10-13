@@ -53,8 +53,10 @@ class DetectionEngine:
         self._rate_tracker: dict[str, deque[float]] = defaultdict(deque)
 
     def _check_signaling_flood(self, event: ParsedSignalingEvent) -> Alert | None:
-        """Track signaling frequency to detect AMF flooding or signaling DoS."""
+        """Track initial UE signaling to detect registration storms."""
         if not event.imsi or not self.enable_flood_rule:
+            return None
+        if event.procedure_name not in {"InitialUEMessage", "RegistrationRequest"}:
             return None
 
         now = time.time()
@@ -142,8 +144,8 @@ class DetectionEngine:
                 if slice_alert:
                     alerts.append(slice_alert)
                     logger.warning(
-                        f"Slice intrusion detected: IMSI={event.imsi}, Requested_Slice={event.requested_slice_id}",
-                        extra={"extra_fields": {"rule": "SLICE_INTRUSION", "slice": event.requested_slice_id}},
+                        f"Slice intrusion detected: IMSI={event.imsi}, Requested_Slice={slice_alert.target_slice}",
+                        extra={"extra_fields": {"rule": "SLICE_INTRUSION", "slice": slice_alert.target_slice}},
                     )
 
         # Rule 4: Security Algorithm Downgrade / Null Ciphering

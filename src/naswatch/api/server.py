@@ -237,8 +237,31 @@ def get_oidc() -> OIDCProvider:
 def get_engine() -> DetectionEngine:
     global _engine
     if _engine is None:
+        # Authorized gNB cell IDs drive the False Base Station rule. Prefer the
+        # organization's uploaded network structure (data volume, survives updates);
+        # fall back to config/settings.yaml so a fresh install still works.
+        authorized_cells: list[str] | None = None
+        try:
+            from naswatch.network_inventory import authorized_cells as _structure_cells
+
+            authorized_cells = _structure_cells()
+        except Exception:  # noqa: BLE001 - inventory is optional at runtime
+            authorized_cells = None
+        if authorized_cells is None:
+            try:
+                import yaml
+                from pathlib import Path
+
+                cfg_path = Path(os.environ.get("NASWATCH_SETTINGS", "config/settings.yaml"))
+                if cfg_path.exists():
+                    cfg = yaml.safe_load(cfg_path.read_text()) or {}
+                    authorized_cells = (cfg.get("network") or {}).get("authorized_cells")
+            except Exception:  # noqa: BLE001 - config is optional at runtime
+                authorized_cells = None
+
         _engine = DetectionEngine(
             device_repo=get_repo(),
+            authorized_cells=authorized_cells,
             flood_threshold=int(os.environ.get("NASWATCH_FLOOD_THRESHOLD", "10")),
             flood_window_seconds=float(os.environ.get("NASWATCH_FLOOD_WINDOW_SECONDS", "60")),
         )

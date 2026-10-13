@@ -61,6 +61,7 @@ class NASParser:
             "guti": None,
             "sst": None,
             "sd": None,
+            "requested_slices": [],
             "msg_type_name": None,
         }
 
@@ -146,6 +147,7 @@ class NASParser:
             "guti": None,
             "sst": None,
             "sd": None,
+            "requested_slices": [],
             "msg_type_name": None,
         }
 
@@ -153,6 +155,7 @@ class NASParser:
             return extracted
 
         try:
+            extracted["requested_slices"] = NASParser._scan_requested_nssai(payload)
             # 5GS NAS header:
             # Byte 0: Extended Protocol Discriminator (0x7e for 5GS MM, 0x2e for 5GS SM)
             # Byte 1: Security Header Type
@@ -228,17 +231,43 @@ class NASParser:
                 if imei_cand:
                     extracted["imei"] = imei_cand
 
-            # Global scan for S-NSSAI (e.g. Requested NSSAI IE 0x2F or S-NSSAI IE 0x22)
-            if extracted["sst"] is None:
-                sst, sd = NASParser._scan_for_snssai(payload)
-                if sst is not None:
-                    extracted["sst"] = sst
-                    extracted["sd"] = sd
-
         except Exception as err:
             logger.debug(f"Raw NAS parse error: {err}")
 
         return extracted
+
+    @staticmethod
+    def _scan_requested_nssai(payload: bytes) -> list[dict[str, int | str | None]]:
+        """Decode S-NSSAIs only from a valid 5GS Registration Request IE."""
+        results: list[dict[str, int | str | None]] = []
+        marker = b"\x7e\x00\x41"  # Plain 5GS Registration Request
+        start = 0
+        while (message_start := payload.find(marker, start)) >= 0:
+            start = message_start + len(marker)
+            ie_offset = payload.find(b"\x2f", start)  # Requested NSSAI IEI
+            if ie_offset < 0 or ie_offset + 2 > len(payload):
+                continue
+
+            ie_length = payload[ie_offset + 1]
+            end = ie_offset + 2 + ie_length
+            if ie_length == 0 or end > len(payload):
+                continue
+
+            cursor = ie_offset + 2
+            decoded: list[dict[str, int | str | None]] = []
+            while cursor < end:
+                item_length = payload[cursor]
+                cursor += 1
+                if item_length not in (1, 4) or cursor + item_length > end:
+                    decoded = []
+                    break
+                sst = payload[cursor]
+                sd = payload[cursor + 1 : cursor + 4].hex().upper() if item_length == 4 else None
+                decoded.append({"sst": sst, "sd": sd})
+                cursor += item_length
+            if decoded and cursor == end:
+                results.extend(decoded)
+        return results
 
     @staticmethod
     def _extract_identity_from_mobile_id(data: bytes) -> tuple[str | None, str | None]:

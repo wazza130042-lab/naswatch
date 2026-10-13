@@ -111,6 +111,19 @@ def main() -> None:
 
     # Initialize Detection Rules & Engine
     det_cfg = cfg.get("detection", {}).get("rules", {})
+
+    # Authorized gNB cells drive the False Base Station rule. Prefer the
+    # organization's uploaded network structure (data volume, survives version
+    # updates); fall back to config/settings.yaml.
+    try:
+        from naswatch.network_inventory import authorized_cells as _structure_cells
+
+        authorized_cells = _structure_cells()
+    except Exception:  # noqa: BLE001 - inventory is optional at runtime
+        authorized_cells = None
+    if authorized_cells is None:
+        authorized_cells = cfg.get("network", {}).get("authorized_cells")
+
     engine = DetectionEngine(
         device_repo=repo,
         enable_rogue_rule=det_cfg.get("rogue_device", {}).get("enabled", True),
@@ -119,7 +132,7 @@ def main() -> None:
         enable_cipher_rule=det_cfg.get("cipher_downgrade", {}).get("enabled", True),
         enable_false_bs_rule=det_cfg.get("false_base_station", {}).get("enabled", True),
         enable_flood_rule=det_cfg.get("signaling_flood", {}).get("enabled", True),
-        authorized_cells=cfg.get("network", {}).get("authorized_cells"),
+        authorized_cells=authorized_cells,
         flood_threshold=int(cfg.get("detection", {}).get("flood_threshold", 10)),
         flood_window_seconds=float(cfg.get("detection", {}).get("flood_window_seconds", 60)),
     )

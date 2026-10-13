@@ -134,11 +134,26 @@ def detect_slice_intrusion(
     Trigger: Device attempts connection to an S-NSSAI (SST/SD) slice for which it has no entitlement.
     Severity: MEDIUM
     """
-    if event.requested_sst is None or known_device is None:
+    if known_device is None:
         return None
 
-    # Check if requested slice is authorized
-    if not known_device.is_slice_authorized(event.requested_sst, event.requested_sd):
+    requested_slices = event.metadata.get("requested_slices", [])
+    if not requested_slices and event.requested_sst is not None:
+        requested_slices = [{"sst": event.requested_sst, "sd": event.requested_sd}]
+
+    unauthorized = next(
+        (
+            item
+            for item in requested_slices
+            if item.get("sst") is not None
+            and not known_device.is_slice_authorized(item["sst"], item.get("sd"))
+        ),
+        None,
+    )
+    if unauthorized is not None:
+        requested_sst = unauthorized["sst"]
+        requested_sd = unauthorized.get("sd")
+        requested_slice_id = f"{requested_sst}:{requested_sd}" if requested_sd else str(requested_sst)
         allowed_desc = ", ".join(
             [s.slice_id for s in known_device.allowed_slices]
         ) or "None (Default Only)"
@@ -149,17 +164,17 @@ def detect_slice_intrusion(
             title="MEDIUM: Unauthorized 5G Network-Slice Access Attempt",
             description=(
                 f"Subscriber IMSI '{event.imsi}' ('{known_device.owner_name}') attempted to access "
-                f"Slice S-NSSAI '{event.requested_slice_id}'. "
+                f"Slice S-NSSAI '{requested_slice_id}'. "
                 f"Provisioned Slices: [{allowed_desc}]."
             ),
             imsi=event.imsi,
             imei=event.imei,
             cell_id=event.cell_id,
-            target_slice=event.requested_slice_id,
+            target_slice=requested_slice_id,
             raw_event={
                 "packet_num": event.packet_num,
-                "requested_sst": event.requested_sst,
-                "requested_sd": event.requested_sd,
+                "requested_sst": requested_sst,
+                "requested_sd": requested_sd,
                 "allowed_slices": [s.slice_id for s in known_device.allowed_slices],
                 "owner_name": known_device.owner_name,
             },
@@ -224,7 +239,14 @@ def detect_false_base_station(
     if not event.cell_id or authorized_cells is None or len(authorized_cells) == 0:
         return None
 
-    if event.cell_id not in authorized_cells:
+    def normalize_cell(cell_id: str) -> str:
+        try:
+            return str(int(cell_id, 0))
+        except ValueError:
+            return cell_id.strip().upper()
+
+    authorized = {normalize_cell(cell_id) for cell_id in authorized_cells}
+    if normalize_cell(event.cell_id) not in authorized:
         return Alert(
             rule_type=AlertRuleType.FALSE_BASE_STATION,
             severity=AlertSeverity.CRITICAL,

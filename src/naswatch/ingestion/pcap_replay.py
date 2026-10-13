@@ -5,6 +5,10 @@ Reads and yields parsed 5G signaling events from stored .pcap / .pcapng captures
 
 from __future__ import annotations
 
+import asyncio
+import json
+import subprocess
+import sys
 import time
 from collections.abc import Generator
 from pathlib import Path
@@ -47,6 +51,29 @@ class PCAPReplayer:
 
         self._stopped = False
         iteration = 0
+        imsi_by_ran_ue_id: dict[int, str] = {}
+        imsi_by_amf_ue_id: dict[int, str] = {}
+
+        def correlate_ue_identity(event: ParsedSignalingEvent) -> ParsedSignalingEvent:
+            """Carry an observed IMSI across NGAP messages for the same UE context."""
+            if event.imsi:
+                if event.ran_ue_ngap_id is not None:
+                    imsi_by_ran_ue_id[event.ran_ue_ngap_id] = event.imsi
+                if event.amf_ue_ngap_id is not None:
+                    imsi_by_amf_ue_id[event.amf_ue_ngap_id] = event.imsi
+                return event
+
+            if event.ran_ue_ngap_id is not None:
+                event.imsi = imsi_by_ran_ue_id.get(event.ran_ue_ngap_id)
+            if event.imsi is None and event.amf_ue_ngap_id is not None:
+                event.imsi = imsi_by_amf_ue_id.get(event.amf_ue_ngap_id)
+
+            if event.imsi:
+                if event.ran_ue_ngap_id is not None:
+                    imsi_by_ran_ue_id[event.ran_ue_ngap_id] = event.imsi
+                if event.amf_ue_ngap_id is not None:
+                    imsi_by_amf_ue_id[event.amf_ue_ngap_id] = event.imsi
+            return event
 
         while not self._stopped:
             iteration += 1
@@ -54,31 +81,70 @@ class PCAPReplayer:
 
             # Try PyShark FileCapture first
             yielded_any = False
-            try:
-                import pyshark
+            if sys.version_info < (3, 14):
+                try:
+                    # PyShark asks asyncio for the current event loop. Python 3.14
+                    # no longer creates one implicitly on the main thread.
+                    try:
+                        asyncio.get_event_loop()
+                    except RuntimeError:
+                        asyncio.set_event_loop(asyncio.new_event_loop())
+                    import pyshark
 
-                capture = pyshark.FileCapture(
-                    str(self.pcap_path),
-                    display_filter=self.display_filter,
-                    use_json=True,
-                    include_raw=True,
-                )
+                    capture = pyshark.FileCapture(
+                        str(self.pcap_path),
+                        display_filter=self.display_filter,
+                        use_json=True,
+                        include_raw=True,
+                    )
 
-                for packet in capture:
-                    if self._stopped:
-                        break
-                    event = NGAPParser.parse_pyshark_packet(packet)
-                    if event:
-                        yielded_any = True
-                        yield event
-                        if self.delay_seconds > 0:
-                            time.sleep(self.delay_seconds)
+                    for packet in capture:
+                        if self._stopped:
+                            break
+                        event = NGAPParser.parse_pyshark_packet(packet)
+                        if event:
+                            event = correlate_ue_identity(event)
+                            yielded_any = True
+                            yield event
+                            if self.delay_seconds > 0:
+                                time.sleep(self.delay_seconds)
 
-                capture.close()
-            except Exception as e:
-                logger.warning(
-                    f"PyShark replay encountered exception ({e}); attempting Scapy fallback."
-                )
+                    capture.close()
+                except Exception as e:
+                    logger.warning(
+                        f"PyShark replay encountered exception ({e}); trying TShark JSON replay."
+                    )
+
+            # TShark JSON replay works with current Python versions even when
+            # the installed PyShark release still uses removed asyncio APIs.
+            if not yielded_any and not self._stopped:
+                try:
+                    result = subprocess.run(
+                        [
+                            "tshark",
+                            "-r",
+                            str(self.pcap_path),
+                            "-Y",
+                            self.display_filter,
+                            "-T",
+                            "json",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    for packet_num, packet in enumerate(json.loads(result.stdout), start=1):
+                        if self._stopped:
+                            break
+                        event = NGAPParser.parse_tshark_json_packet(packet)
+                        if event:
+                            event = correlate_ue_identity(event)
+                            yielded_any = True
+                            yield event
+                            if self.delay_seconds > 0:
+                                time.sleep(self.delay_seconds)
+                except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as tshark_err:
+                    logger.error(f"TShark JSON replay failed: {tshark_err}")
 
             # If PyShark yielded nothing or failed, try Scapy
             if not yielded_any and not self._stopped:
@@ -91,6 +157,7 @@ class PCAPReplayer:
                             break
                         event = NGAPParser.parse_scapy_packet(pkt, packet_num=i)
                         if event:
+                            event = correlate_ue_identity(event)
                             yield event
                             if self.delay_seconds > 0:
                                 time.sleep(self.delay_seconds)

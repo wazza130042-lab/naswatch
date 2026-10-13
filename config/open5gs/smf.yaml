@@ -42,3 +42,7 @@ smf:
         sd: 000003
         dnn:
           - internet
+      - sst: 4
+        sd: "010203"
+        dnn:
+          - internet

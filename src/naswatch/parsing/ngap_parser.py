@@ -7,6 +7,7 @@ and unpacks embedded NAS-PDU signaling containers.
 from __future__ import annotations
 
 import binascii
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,16 +19,19 @@ logger = get_logger("parsing.ngap")
 
 # NGAP Elementary Procedure Codes (3GPP TS 38.413)
 NGAP_PROCEDURES = {
-    4: "HandoverResourceAllocation",
+    4: "DownlinkNASTransport",
+    10: "HandoverResourceAllocation",
     14: "InitialContextSetup",
     15: "InitialUEMessage",
-    20: "PDUSessionResourceSetup",
-    21: "PDUSessionResourceModify",
-    22: "PDUSessionResourceRelease",
-    29: "UplinkNASTransport",
-    30: "DownlinkNASTransport",
-    40: "UERadioCapabilityInfoIndication",
-    41: "UEContextRelease",
+    20: "NGReset",
+    21: "NGSetup",
+    26: "PDUSessionResourceModify",
+    28: "PDUSessionResourceRelease",
+    29: "PDUSessionResourceSetup",
+    39: "UplinkNASTransport",
+    37: "UERadioCapabilityInfoIndication",
+    35: "UEContextRelease",
+    46: "UplinkNASTransport",
 }
 
 
@@ -118,12 +122,12 @@ class NGAPParser:
                             pass
 
                 # S-NSSAI in NGAP
-                if hasattr(ngap, "sst"):
+                if event.procedure_code in (26, 29) and hasattr(ngap, "sst"):
                     try:
                         event.requested_sst = int(str(ngap.sst), 0)
                     except ValueError:
                         pass
-                if hasattr(ngap, "sd"):
+                if event.procedure_code in (26, 29) and hasattr(ngap, "sd"):
                     event.requested_sd = str(ngap.sd)
 
             # NAS Layer Fields
@@ -141,6 +145,8 @@ class NGAPParser:
                         event.requested_sst = nas_data["sst"]
                     if nas_data.get("sd") is not None:
                         event.requested_sd = nas_data["sd"]
+                    if nas_data.get("requested_slices"):
+                        event.metadata["requested_slices"] = nas_data["requested_slices"]
                     if not event.procedure_name and nas_data.get("msg_type_name"):
                         event.procedure_name = nas_data["msg_type_name"]
 
@@ -157,6 +163,8 @@ class NGAPParser:
                     if event.requested_sst is None and raw_nas_data.get("sst") is not None:
                         event.requested_sst = raw_nas_data["sst"]
                         event.requested_sd = raw_nas_data.get("sd")
+                    if raw_nas_data.get("requested_slices"):
+                        event.metadata["requested_slices"] = raw_nas_data["requested_slices"]
                 except Exception as e:
                     logger.debug(f"Failed parsing embedded NAS PDU: {e}")
 
@@ -164,6 +172,143 @@ class NGAPParser:
 
         except Exception as err:
             logger.error(f"Error dissecting PyShark packet: {err}", exc_info=True)
+            return None
+
+    @staticmethod
+    def parse_tshark_json_packet(packet: dict[str, Any]) -> ParsedSignalingEvent | None:
+        """Parse one packet from TShark's JSON output without PyShark's asyncio runtime."""
+        try:
+            layers = packet.get("_source", {}).get("layers", {})
+
+            def normalize(name: str) -> str:
+                return "".join(char.lower() for char in name if char.isalnum())
+
+            def find_values(node: Any, names: set[str]) -> list[str]:
+                found: list[str] = []
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        key_normalized = normalize(key)
+                        leaf_normalized = normalize(key.rsplit(".", 1)[-1])
+                        if key_normalized in names or leaf_normalized in names:
+                            values = value if isinstance(value, list) else [value]
+                            found.extend(str(item) for item in values if not isinstance(item, (dict, list)))
+                        else:
+                            found.extend(find_values(value, names))
+                elif isinstance(node, list):
+                    for value in node:
+                        found.extend(find_values(value, names))
+                return found
+
+            def first(*names: str) -> str | None:
+                values = find_values(layers, {normalize(name) for name in names})
+                return values[0] if values else None
+
+            def last(*names: str) -> str | None:
+                values = find_values(layers, {normalize(name) for name in names})
+                return values[-1] if values else None
+
+            if "ngap" not in layers:
+                return None
+
+            frame_number = first("frame.number")
+            epoch = first("frame.time_epoch")
+            timestamp = datetime.now(UTC)
+            if epoch:
+                try:
+                    timestamp = datetime.fromtimestamp(float(epoch), tz=UTC)
+                except ValueError:
+                    timestamp = datetime.fromisoformat(epoch.replace("Z", "+00:00"))
+
+            event = ParsedSignalingEvent(
+                timestamp=timestamp,
+                packet_num=int(frame_number) if frame_number else None,
+                source_ip=first("ip.src", "ipv6.src") or "127.0.0.1",
+                dest_ip=first("ip.dst", "ipv6.dst") or "127.0.0.1",
+                raw_payload_hex=json.dumps(layers, separators=(",", ":"))[:512],
+            )
+
+            procedure_code = first("ngap.procedureCode")
+            if procedure_code:
+                event.procedure_code = int(procedure_code, 0)
+                event.procedure_name = NGAP_PROCEDURES.get(
+                    event.procedure_code, f"Procedure_{event.procedure_code}"
+                )
+
+            for field_names, attr in (
+                (("ngap.RAN_UE_NGAP_ID",), "ran_ue_ngap_id"),
+                (("ngap.AMF_UE_NGAP_ID",), "amf_ue_ngap_id"),
+                (("ngap.NRCellIdentity", "ngap.nr_cell_identity"), "cell_id"),
+            ):
+                value = first(*field_names)
+                if value:
+                    if attr in {"ran_ue_ngap_id", "amf_ue_ngap_id"}:
+                        try:
+                            setattr(event, attr, int(value, 0))
+                        except ValueError:
+                            pass
+                    else:
+                        event.cell_id = value
+
+            tac = first("ngap.tAC", "ngap.TAC")
+            if tac:
+                try:
+                    event.tac = int(tac, 0)
+                except ValueError:
+                    pass
+
+            nas_pdu = first("ngap.NAS_PDU")
+            if nas_pdu:
+                try:
+                    nas_bytes = bytes.fromhex(nas_pdu.replace(":", ""))
+                    nas_data = NASParser.parse_raw_nas(nas_bytes)
+                    event.raw_payload_hex = nas_bytes.hex()
+                    if nas_data.get("msg_type_name") and not event.procedure_name:
+                        event.procedure_name = nas_data["msg_type_name"]
+                    if nas_data.get("imei"):
+                        event.imei = nas_data["imei"]
+                    if nas_data.get("guti"):
+                        event.guti = nas_data["guti"]
+                    if nas_data.get("sst") is not None:
+                        event.requested_sst = nas_data["sst"]
+                        event.requested_sd = nas_data.get("sd")
+                    if nas_data.get("requested_slices"):
+                        event.metadata["requested_slices"] = nas_data["requested_slices"]
+                except ValueError:
+                    pass
+
+            # TShark decodes SUCI components individually; for the lab's
+            # null-protection SUCI, these fields reconstruct the SUPI/IMSI.
+            mcc = first("e212.mcc")
+            mnc = first("e212.mnc")
+            msin = first("nas-5gs.mm.suci.msin")
+            if mcc and mnc and msin:
+                event.imsi = f"{mcc}{mnc}{msin}"
+
+            sst = last("nas-5gs.mm.sst")
+            if sst is None and event.procedure_code in (26, 29):
+                sst = last("ngap.sst")
+            if sst:
+                try:
+                    event.requested_sst = int(sst, 0)
+                except ValueError:
+                    pass
+
+            sd = last("nas-5gs.mm.mm_sd")
+            if sd is None and event.procedure_code in (26, 29):
+                sd = last("ngap.sd")
+            if sd:
+                try:
+                    event.requested_sd = (
+                        sd.replace("0x", "").replace(":", "").upper().zfill(6)
+                        if sd.lower().startswith("0x") or ":" in sd or len(sd) == 6
+                        else f"{int(sd, 0):06X}"
+                    )
+                except ValueError:
+                    event.requested_sd = sd
+
+            return event
+        except Exception as err:
+            logger.error(f"Error parsing TShark JSON packet: {err}", exc_info=True)
             return None
 
     @staticmethod
@@ -206,6 +351,8 @@ class NGAPParser:
                     if event.requested_sst is None and nas_data.get("sst") is not None:
                         event.requested_sst = nas_data["sst"]
                         event.requested_sd = nas_data.get("sd")
+                    if nas_data.get("requested_slices"):
+                        event.metadata["requested_slices"] = nas_data["requested_slices"]
                     if not event.procedure_name and nas_data.get("msg_type_name"):
                         event.procedure_name = nas_data["msg_type_name"]
 

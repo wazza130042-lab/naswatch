@@ -32,8 +32,8 @@ sessions:
   - type: 'IPv4'
     apn: 'internet'
     slice:
-      sst: 1
-      sd: 1
+      sst: 4
+      sd: 0x010203
 
 configured-nssai:
   - sst: 1

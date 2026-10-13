@@ -55,10 +55,31 @@ class LiveCaptureEngine:
             )
 
             count = 0
+            packet_no = 0
             for packet in capture.sniff_continuously(packet_count=self.packet_count):
                 if self._stopped:
                     break
+                packet_no += 1
+
+                # Primary path: full tshark/pyshark NGAP+NAS dissection.
                 event = NGAPParser.parse_pyshark_packet(packet)
+
+                # Fallback: if tshark did not expose a decodable NAS layer (e.g. a
+                # forged / non-standard 5G NAS frame injected by an attacker), fall
+                # back to the raw-bytes parser so the packet is still evaluated.
+                if event is None:
+                    try:
+                        raw = packet.get_raw_packet()
+                    except Exception:
+                        raw = None
+                    if raw and any(marker in raw for marker in (b"\x7e\x00", b"\x7e\x02", b"\x2e\x00")):
+                        try:
+                            from scapy.all import Ether
+
+                            event = NGAPParser.parse_scapy_packet(Ether(raw), packet_num=packet_no)
+                        except Exception:
+                            event = None
+
                 if event:
                     count += 1
                     yield event
