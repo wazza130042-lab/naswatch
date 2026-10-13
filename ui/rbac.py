@@ -5,7 +5,7 @@ import streamlit as st
 
 
 ROLE_PERMISSIONS = {
-    "admin":   {"view", "replay", "inject", "mitigate", "provision", "clear", "seed", "users"},
+    "admin":   {"view", "replay", "mitigate", "provision", "users"},
     "analyst": {"view", "replay", "mitigate"},
     "viewer":  {"view"},
 }

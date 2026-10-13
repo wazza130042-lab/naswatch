@@ -4,6 +4,8 @@ NASWatch UI Components — matches naswatch_redesign.html
 
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -128,7 +130,7 @@ def render_threat_timeline(alerts: list[Alert]) -> None:
                     </svg>
                 </div>
                 <div style="font-size:13px; font-weight:600; color:{C['low']};">Timeline Ready</div>
-                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">Replay a PCAP or inject attacks</div>
+                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">Replay a PCAP or start the live sensor</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -173,57 +175,191 @@ def render_threat_timeline(alerts: list[Alert]) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TOPOLOGY — SVG matching the redesign
+#  TOPOLOGY — data-driven radio / AMF / slice graph
 # ══════════════════════════════════════════════════════════════════════════════
-def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]) -> None:
-    has_rogue = any(a.rule_type.value == "FALSE_BASE_STATION" for a in alerts)
-    has_slice_breach = any(a.rule_type.value == "SLICE_INTRUSION" for a in alerts)
+def _spread(n: int, top: float, bottom: float) -> list[float]:
+    """Evenly distribute n nodes between top and bottom (inclusive)."""
+    if n <= 1:
+        return [(top + bottom) / 2.0]
+    step = (bottom - top) / (n - 1)
+    return [top + i * step for i in range(n)]
 
-    gnb_beta_color = C["crit"] if has_rogue else C["signal"]
-    slice2_color = C["crit"] if has_slice_breach else C["signal"]
 
+def render_topology_graph(graph) -> None:
+    """Draw the observed 5G topology: radio cells -> AMF -> network slices.
+
+    ``graph`` is a ``ui.topology_data.TopologyGraph``. Authorized cells render in
+    the signal colour, rogue cells (never provisioned) in red, and slices with an
+    active SLICE_INTRUSION in amber. The whole block is emitted as a single line
+    so Streamlit's Markdown parser treats it as one raw-HTML block instead of an
+    indented code block (which used to leak the SVG source into the page).
+    """
+    nodes = list(graph.cells) + list(graph.rogue_cells)
+    slices = list(graph.slices)
+
+    amf_names = [str(a.get("name")) for a in (getattr(graph, "amf", None) or []) if a.get("name")]
+    if amf_names:
+        amf_sub = ", ".join(amf_names[:2])
+        if len(amf_names) > 2:
+            amf_sub += f" +{len(amf_names) - 2}"
+    else:
+        amf_sub = f'{graph.amf_count} instance{"" if graph.amf_count == 1 else "s"}'
+
+    if not nodes and not slices:
+        st.markdown(
+            '<div class="section-card" style="padding:38px; text-align:center; color:#5F83AA;'
+            ' font-family:var(--mono); font-size:12px;">No radio cells or network slices defined'
+            ' yet. Upload your organization\'s network structure, or replay a signaling capture /'
+            ' start the live sensor to populate the topology.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    overflow = ""
+    if len(nodes) > 6:
+        overflow = f"+{len(nodes) - 6} more cells not shown"
+        nodes = nodes[:6]
+    if len(slices) > 6:
+        overflow = (overflow + f" · +{len(slices) - 6} more slices not shown").strip(" ·")
+        slices = slices[:6]
+
+    cx, cy = 490.0, 180.0
+    gx, sx = 118.0, 846.0
+    half = 24.0
+    cell_y = _spread(len(nodes), 48, 312)
+    slice_y = _spread(len(slices), 48, 312)
+
+    p: list[str] = []
+    p.append('<div class="section-card" style="padding:20px 26px 10px;">')
+    p.append(
+        '<svg width="100%" height="360" viewBox="0 0 980 360" role="img"'
+        ' aria-label="Network topology" style="display:block;">'
+    )
+
+    # links: radio cells -> AMF
+    for node, y in zip(nodes, cell_y):
+        rogue_edge = not node.authorized
+        color = C["crit"] if rogue_edge else C["border"]
+        width = 1.8 if rogue_edge else 1.3
+        dash = ' stroke-dasharray="6 4"' if rogue_edge else ""
+        p.append(
+            f'<line x1="{gx + half:.0f}" y1="{y:.0f}" x2="{cx - 28:.0f}" y2="{cy:.0f}"'
+            f' stroke="{color}" stroke-width="{width}"{dash}/>'
+        )
+
+    # links: AMF -> slices
+    for sl, y in zip(slices, slice_y):
+        color = C["high"] if sl.intrusions else C["border"]
+        width = 1.8 if sl.intrusions else 1.3
+        p.append(
+            f'<line x1="{cx + 28:.0f}" y1="{cy:.0f}" x2="{sx - 18:.0f}" y2="{y:.0f}"'
+            f' stroke="{color}" stroke-width="{width}"/>'
+        )
+
+    # AMF node
+    p.append(
+        f'<polygon points="{cx:.0f},{cy - 32:.0f} {cx + 30:.0f},{cy:.0f} {cx:.0f},{cy + 32:.0f}'
+        f' {cx - 30:.0f},{cy:.0f}" fill="{C["bg-raised"]}" stroke="{C["low"]}" stroke-width="1.6"/>'
+    )
+    p.append(
+        f'<text x="{cx:.0f}" y="{cy + 4:.0f}" text-anchor="middle" fill="{C["text-1"]}"'
+        f' font-family="IBM Plex Mono" font-size="11" font-weight="600">AMF</text>'
+    )
+    p.append(
+        f'<text x="{cx:.0f}" y="{cy + 58:.0f}" text-anchor="middle" fill="{C["text-1"]}"'
+        f' font-family="IBM Plex Mono" font-size="12.5" font-weight="600">5G Core</text>'
+    )
+    p.append(
+        f'<text x="{cx:.0f}" y="{cy + 74:.0f}" text-anchor="middle" fill="{C["text-3"]}"'
+        f' font-family="IBM Plex Mono" font-size="10.5">{escape(amf_sub)}</text>'
+    )
+
+    # radio cell nodes (authorized + rogue)
+    for node, y in zip(nodes, cell_y):
+        stroke = C["crit"] if not node.authorized else C["signal"]
+        p.append(
+            f'<rect x="{gx - half:.0f}" y="{y - half:.0f}" width="{2 * half:.0f}"'
+            f' height="{2 * half:.0f}" rx="9" fill="{C["bg-raised"]}" stroke="{stroke}" stroke-width="1.6"/>'
+        )
+        p.append(
+            f'<path d="M{gx - 9:.0f} {y + 7:.0f} L{gx:.0f} {y - 8:.0f} L{gx + 9:.0f} {y + 7:.0f}"'
+            f' fill="none" stroke="{stroke}" stroke-width="1.6" stroke-linecap="round"/>'
+        )
+        cell_title = str(node.label)
+        if getattr(node, "name", ""):
+            cell_title = f"{cell_title} · {node.name}"
+        p.append(
+            f'<text x="{gx + half + 12:.0f}" y="{y - 2:.0f}" fill="{C["text-1"]}"'
+            f' font-family="IBM Plex Mono" font-size="12.5" font-weight="600">{escape(cell_title)}</text>'
+        )
+        if node.authorized:
+            sub, sub_color = f"authorized · {node.alerts} alerts", C["text-3"]
+        else:
+            sub, sub_color = f"ROGUE · {node.alerts} alerts", C["crit"]
+        p.append(
+            f'<text x="{gx + half + 12:.0f}" y="{y + 14:.0f}" fill="{sub_color}"'
+            f' font-family="IBM Plex Mono" font-size="10.5">{escape(sub)}</text>'
+        )
+
+    # slice nodes
+    for sl, y in zip(slices, slice_y):
+        stroke = C["high"] if sl.intrusions else C["signal"]
+        p.append(
+            f'<polygon points="{sx:.0f},{y - 18:.0f} {sx + 18:.0f},{y:.0f} {sx:.0f},{y + 18:.0f}'
+            f' {sx - 18:.0f},{y:.0f}" fill="{C["bg-raised"]}" stroke="{stroke}" stroke-width="1.6"/>'
+        )
+        title = f"Slice {sl.sst}" if sl.sst else "Slice"
+        p.append(
+            f'<text x="{sx + 28:.0f}" y="{y - 3:.0f}" fill="{C["text-1"]}"'
+            f' font-family="IBM Plex Mono" font-size="11.5" font-weight="600">{escape(title)}</text>'
+        )
+        p.append(
+            f'<text x="{sx + 28:.0f}" y="{y + 12:.0f}" fill="{C["text-3"]}"'
+            f' font-family="IBM Plex Mono" font-size="10">{escape(sl.slice_id)} · {sl.devices} dev</text>'
+        )
+        if sl.intrusions:
+            p.append(
+                f'<text x="{sx + 28:.0f}" y="{y + 27:.0f}" fill="{C["high"]}"'
+                f' font-family="IBM Plex Mono" font-size="10">{sl.intrusions} intrusions</text>'
+            )
+
+    p.append("</svg>")
+    if overflow:
+        p.append(
+            f'<div style="color:#5F83AA; font-family:var(--mono); font-size:10.5px;'
+            f' padding-top:4px;">{escape(overflow)}</div>'
+        )
+    p.append("</div>")
+    st.markdown("".join(p), unsafe_allow_html=True)
+
+
+def render_cell_table(graph) -> None:
+    """Compact table classifying every radio cell currently in the model."""
+    rows = []
+    for node in list(graph.cells) + list(graph.rogue_cells):
+        tag_color = C["signal"] if node.authorized else C["crit"]
+        tag = "AUTHORIZED" if node.authorized else "ROGUE"
+        last = node.last_seen.strftime("%Y-%m-%d %H:%M:%S") if node.last_seen else "—"
+        crit_color = C["crit"] if node.critical else C["text-3"]
+        rows.append(
+            "<tr>"
+            f'<td style="font-family:var(--mono); color:{C["text-1"]}">{escape(str(node.label))}</td>'
+            f'<td>{escape(str(getattr(node, "name", "") or "—"))}</td>'
+            f'<td style="font-family:var(--mono); color:{C["text-3"]}">{escape(str(getattr(node, "tac", "") or "—"))}</td>'
+            f'<td><span class="severity-pill" style="color:{tag_color}">{tag}</span></td>'
+            f'<td style="font-family:var(--mono)">{node.alerts}</td>'
+            f'<td style="font-family:var(--mono); color:{crit_color}">{node.critical}</td>'
+            f'<td style="font-family:var(--mono); color:{C["text-3"]}">{escape(last)}</td>'
+            "</tr>"
+        )
+    if not rows:
+        return
     st.markdown(
-        f"""
-        <div class="section-card" style="padding:30px;">
-            <svg width="100%" height="360" viewBox="0 0 980 360">
-                <!-- Edges -->
-                <line x1="140" y1="110" x2="480" y2="180" stroke="#174A83" stroke-width="1.5"/>
-                <line x1="140" y1="260" x2="480" y2="180" stroke="#174A83" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="60"  stroke="#174A83" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="180" stroke="#174A83" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="300" stroke="#174A83" stroke-width="1.5"/>
-
-                <!-- gNB-Alpha -->
-                <rect x="108" y="94" width="32" height="32" rx="4" fill="{C['bg-raised']}" stroke="{C['signal']}" stroke-width="1.5"/>
-                <text x="150" y="105" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">gNB-Alpha</text>
-                <text x="150" y="121" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">0x10</text>
-
-                <!-- gNB-Beta -->
-                <rect x="108" y="244" width="32" height="32" rx="4" fill="{C['bg-raised']}" stroke="{gnb_beta_color}" stroke-width="1.5"/>
-                <text x="150" y="255" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">gNB-Beta</text>
-                <text x="150" y="271" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">0x20</text>
-
-                <!-- AMF -->
-                <polygon points="480,150 512,180 480,210 448,180" fill="{C['bg-raised']}" stroke="{C['low']}" stroke-width="1.6"/>
-                <text x="480" y="235" text-anchor="middle" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">5G Core AMF</text>
-
-                <!-- Slice 1 -->
-                <polygon points="840,44 858,60 840,76 822,60" fill="{C['bg-raised']}" stroke="{C['low']}" stroke-width="1.5"/>
-                <text x="866" y="55" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 1</text>
-                <text x="866" y="71" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">eMBB</text>
-
-                <!-- Slice 2 -->
-                <polygon points="840,164 858,180 840,196 822,180" fill="{C['bg-raised']}" stroke="{slice2_color}" stroke-width="1.5"/>
-                <text x="866" y="175" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 2</text>
-                <text x="866" y="191" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">uRLLC</text>
-
-                <!-- Slice 3 -->
-                <polygon points="840,284 858,300 840,316 822,300" fill="{C['bg-raised']}" stroke="{C['signal']}" stroke-width="1.5"/>
-                <text x="866" y="295" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 3</text>
-                <text x="866" y="311" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">mIoT</text>
-            </svg>
-        </div>
-        """,
+        '<table class="slice-table">'
+        "<thead><tr><th>Cell</th><th>Site</th><th>TAC</th><th>Classification</th><th>Alerts</th>"
+        "<th>Critical</th><th>Last seen</th></tr></thead>"
+        f'<tbody>{"".join(rows)}</tbody>'
+        "</table>",
         unsafe_allow_html=True,
     )
 
@@ -231,39 +367,29 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
 # ══════════════════════════════════════════════════════════════════════════════
 #  NETWORK SLICE TABLE
 # ══════════════════════════════════════════════════════════════════════════════
-def render_network_slice_matrix(alerts: list[Alert], devices: list[Device]) -> None:
-    slices_def = [
-        (1, "000001", "eMBB", C["low"]),
-        (2, "000002", "uRLLC", C["crit"]),
-        (3, "000003", "mIoT", C["signal"]),
-    ]
-
-    rows = ""
-    for sst, sd, name, color in slices_def:
-        sid = f"{sst}:{sd}"
-        authorized = [d for d in devices if d.is_slice_authorized(sst, sd)]
-        intrusions = [a for a in alerts if a.target_slice == sid and a.rule_type.value == "SLICE_INTRUSION"]
-        status = "MONITORED" if intrusions else "STABLE"
-        status_color = C["high"] if intrusions else C["signal"]
-        status_border = C["high"] if intrusions else C["signal-dim"]
-
-        rows += f"""
-        <tr>
-            <td><span class="slice-swatch" style="background:{color}"></span>Slice {sst}</td>
-            <td style="font-family:var(--mono); font-size:12px;">{sid}</td>
-            <td>{name}</td>
-            <td>{len(authorized)}</td>
-            <td><span style="font-size:10.5px; font-weight:600; padding:3px 8px; border-radius:2px; letter-spacing:0.02em;
-                         color:{status_color}; border:1px solid {status_border};">{status}</span></td>
-        </tr>"""
-
+def render_slice_matrix(graph) -> None:
+    """Provisioned / observed slices with device counts and intrusion state."""
+    rows = []
+    for sl in graph.slices:
+        breaches = sl.intrusions > 0
+        color = C["high"] if breaches else C["signal"]
+        status = "MONITORED" if breaches else "STABLE"
+        rows.append(
+            "<tr>"
+            f'<td style="color:{C["text-1"]}; font-family:var(--mono)">Slice {sl.sst or "-"}</td>'
+            f'<td style="font-family:var(--mono)">{escape(sl.slice_id)}</td>'
+            f'<td>{escape(sl.name or "-")}</td>'
+            f'<td style="font-family:var(--mono)">{sl.devices}</td>'
+            f'<td><span class="severity-pill" style="color:{color}">{status}</span></td>'
+            "</tr>"
+        )
+    if not rows:
+        return
     st.markdown(
-        f"""
-        <table class="slice-table">
-            <thead><tr><th>Slice</th><th>S-NSSAI</th><th>Type</th><th>Devices</th><th>Status</th></tr></thead>
-            <tbody>{rows}</tbody>
-        </table>
-        """,
+        '<table class="slice-table">'
+        "<thead><tr><th>Slice</th><th>S-NSSAI</th><th>Type</th><th>Devices</th><th>Status</th></tr></thead>"
+        f'<tbody>{"".join(rows)}</tbody>'
+        "</table>",
         unsafe_allow_html=True,
     )
 

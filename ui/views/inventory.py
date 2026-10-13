@@ -9,8 +9,8 @@ import streamlit as st
 
 from ui.rbac import has
 from ui.components import (
-    render_alert_item, render_interactive_topology_graph, render_kpi_cards,
-    render_mitre_attack_matrix, render_network_slice_matrix,
+    render_alert_item, render_kpi_cards,
+    render_mitre_attack_matrix,
     render_severity_chart, render_threat_timeline,
 )
 
@@ -109,5 +109,5 @@ def render(ctx):
             })
         st.dataframe(pd.DataFrame(dev_rows), use_container_width=True, hide_index=True)
     else:
-        st.warning("No devices. Seed the database.")
+        st.warning("No devices provisioned yet.")
 

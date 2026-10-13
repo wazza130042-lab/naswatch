@@ -28,15 +28,53 @@ st.set_page_config(page_title="NASWatch", page_icon="🛡️", layout="wide", in
 
 from ui.login import login_page
 from ui.views import event_search, incidents, inventory, overview, reports, topology, users
+from ui.rbac import has
 from ui.session import (
     _clear_session_cookie,
     _restore_session,
     _session_token,
     _write_session_cookie,
+    sign_out,
 )
 from ui.sidebar import render_sidebar
 from ui.store import get_repository
 from ui.theme import CSS
+
+
+def _render_settings_menu(username: str, role: str) -> None:
+    """Top-corner settings menu: operator identity, User management, Sign out.
+
+    Replaces the old sidebar account block — User management is hidden for roles
+    without the permission, while Sign out is always available.
+    """
+    role_colors = {"admin": "var(--crit)", "analyst": "var(--high)", "viewer": "var(--low)"}
+    role_hex = {"admin": "229,72,77", "analyst": "245,165,36", "viewer": "91,141,239"}
+    rc = role_colors.get(role, "var(--text-2)")
+    rh = role_hex.get(role, "139,147,163")
+
+    with st.popover("", icon=":material/settings:", help="Settings", use_container_width=True):
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:9px; padding:8px 10px;
+                        background:var(--bg-raised); border:1px solid var(--border-soft);
+                        border-radius:4px; margin-bottom:10px;">
+                <span style="width:7px; height:7px; border-radius:50%; background:{rc}; flex-shrink:0;"></span>
+                <span style="font-size:12px; color:var(--text-1); font-weight:500; flex:1;
+                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{username}</span>
+                <span style="padding:1px 5px; border-radius:2px; font-size:8px; font-weight:600;
+                             text-transform:uppercase; letter-spacing:0.06em; background:rgba({rh},0.12);
+                             color:{rc}; border:1px solid rgba({rh},0.25); flex-shrink:0;">{role}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if has("users"):
+            if st.button("User management", use_container_width=True, key="settings_users"):
+                st.session_state.current_page = "User management"
+                st.rerun()
+        if st.button("Sign out", use_container_width=True, key="settings_signout"):
+            sign_out()
+            st.rerun()
 
 
 def main() -> None:
@@ -66,20 +104,14 @@ def main() -> None:
     if "current_page" not in st.session_state:
         st.session_state.current_page = "Overview"
 
-    if repo.count_devices() == 0:
-        seed_csv = "scripts/sample_devices.csv"
-        if Path(seed_csv).exists():
-            from scripts.seed_inventory import seed_inventory_from_csv
-            seed_inventory_from_csv(seed_csv, db_path)
-
     st.markdown(CSS, unsafe_allow_html=True)
     # ── Sidebar ─────────────────────────────────────────────────────────
-    page, selected_severity, selected_rule = render_sidebar(repo, db_path, username, role)
+    page, selected_severity, selected_rule = render_sidebar(repo)
     # ── Global investigation command bar ───────────────────────────────
     page_slug = page.lower().replace(" ", "-")
     with st.container(key="command-bar", border=False):
-        crumb, scope_time_col, scope_search_col, status_col = st.columns(
-            [1.12, 0.72, 1.18, 0.58], gap="small", vertical_alignment="center"
+        crumb, scope_time_col, scope_search_col, status_col, settings_col = st.columns(
+            [1.10, 0.70, 1.12, 0.48, 0.14], gap="small", vertical_alignment="center"
         )
         with crumb:
             st.markdown(
@@ -102,6 +134,8 @@ def main() -> None:
                 '<div class="sensor-status"><i></i><span>SENSOR ONLINE</span></div>',
                 unsafe_allow_html=True,
             )
+        with settings_col:
+            _render_settings_menu(username, role)
 
     # ── Data and global investigation scope ────────────────────────────
     devices = repo.list_all(limit=500)

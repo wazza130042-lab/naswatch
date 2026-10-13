@@ -10,8 +10,8 @@ import streamlit as st
 from ui.rbac import has
 from ui.store import get_user_store
 from ui.components import (
-    render_alert_item, render_interactive_topology_graph, render_kpi_cards,
-    render_mitre_attack_matrix, render_network_slice_matrix,
+    render_alert_item, render_kpi_cards,
+    render_mitre_attack_matrix,
     render_severity_chart, render_threat_timeline,
 )
 

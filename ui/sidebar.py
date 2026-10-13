@@ -1,4 +1,8 @@
-"""SOC sidebar: navigation, ingestion controls, filters, and operator actions."""
+"""SOC sidebar: navigation, ingestion, and incident filters.
+
+Operator account controls (identity, User management, Sign out) live in the
+top-corner settings menu owned by ``ui/app.py``.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +12,7 @@ import streamlit as st
 from ui.rbac import has
 
 
-def render_sidebar(repo, db_path, username, role):
+def render_sidebar(repo):
     """Render the sidebar and return (page, severity_filter, rule_filter)."""
     with st.sidebar:
         # Brand
@@ -105,34 +109,6 @@ def render_sidebar(repo, db_path, username, role):
 
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-        # Attack simulator — compact row matching redesign
-        if has("inject"):
-            with st.expander("› ⚡ Attack simulator"):
-                from naswatch.detection.engine import DetectionEngine
-                from naswatch.storage.models import ParsedSignalingEvent
-                # Authorized gNB cell IDs (config/settings.yaml → network.authorized_cells).
-                # Required for the False Base Station rule to fire on the rogue-gNB scenario.
-                authorized_cells = ["0x000000010", "0x000000011", "0x000000012"]
-                engine = DetectionEngine(device_repo=repo, authorized_cells=authorized_cells)
-                attacks = [
-                    ("SIM Cloning", ParsedSignalingEvent(imsi="999700000000001", imei="869999999999999",
-                         procedure_name="SecurityModeComplete", cell_id="0x000000010")),
-                    ("Slice Intrusion", ParsedSignalingEvent(imsi="999700000000002", requested_sst=2, requested_sd="000002",
-                         procedure_name="PDUSessionEstablishmentRequest", cell_id="0x000000010")),
-                    ("Rogue gNB", ParsedSignalingEvent(imsi="999700000000001", cell_id="0xDEADBEEF",
-                         procedure_name="RegistrationRequest")),
-                    ("Cipher Downgrade", ParsedSignalingEvent(imsi="999700000000001", cipher_algo="NEA0", integrity_algo="NIA0",
-                         procedure_name="SecurityModeCommand")),
-                ]
-                for label, evt in attacks:
-                    if st.button(label, use_container_width=True, key=f"atk_{label}"):
-                        alerts = engine.process_event(evt)
-                        for a in alerts:
-                            repo.record_alert(a)
-                        st.session_state.inspected_count += 1
-                        st.toast(f"{label} injected")
-                        st.rerun()
-
         st.markdown("---")
 
         st.markdown('<div class="nav-section-label" style="margin-top:4px;">INCIDENT FILTERS</div>', unsafe_allow_html=True)
@@ -144,66 +120,6 @@ def render_sidebar(repo, db_path, username, role):
         ], key="rule_filter")
 
         st.markdown("---")
-
-        # Administrative actions — hidden entirely from roles without them.
-        if has("seed") or has("clear"):
-            c1, c2 = st.columns(2)
-            with c1:
-                if has("seed"):
-                    if st.button("🌱 Seed", use_container_width=True, key="btn_seed"):
-                        from scripts.seed_inventory import seed_inventory_from_csv
-                        seed_inventory_from_csv("scripts/sample_devices.csv", db_path)
-                        st.toast("Seeded")
-                        st.rerun()
-            with c2:
-                if has("clear"):
-                    if st.button("🗑 Clear", use_container_width=True, key="btn_clear"):
-                        repo.clear_alerts()
-                        st.session_state.inspected_count = 0
-                        st.session_state.last_events = []
-                        st.toast("Cleared")
-                        st.rerun()
-        # Administration — account management for administrators only.
-        if has("users"):
-            st.markdown("---")
-            st.markdown('<div class="nav-section-label" style="margin-top:10px;">ADMINISTRATION</div>', unsafe_allow_html=True)
-            if st.button(
-                "User management",
-                use_container_width=True,
-                type="primary" if st.session_state.current_page == "User management" else "secondary",
-                key="nav_users",
-            ):
-                st.session_state.current_page = "User management"
-                st.rerun()
-
-        # Role + sign out
-        role_colors = {"admin": "var(--crit)", "analyst": "var(--high)", "viewer": "var(--low)"}
-        role_hex = {"admin": "229,72,77", "analyst": "245,165,36", "viewer": "91,141,239"}
-        rc = role_colors.get(role, "var(--text-2)")
-        rh = role_hex.get(role, "139,147,163")
-        st.markdown(
-            f"""
-            <div style="display:flex; align-items:center; gap:9px; padding:8px 10px;
-                        background:var(--bg-raised); border:1px solid var(--border-soft); border-radius:4px; margin-bottom:10px;">
-                <span style="width:7px; height:7px; border-radius:50%; background:{rc}; flex-shrink:0;"></span>
-                <span style="font-size:12px; color:var(--text-1); font-weight:500; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{username}</span>
-                <span style="padding:1px 5px; border-radius:2px; font-size:8px; font-weight:600;
-                             text-transform:uppercase; letter-spacing:0.06em; background:rgba({rh},0.12);
-                             color:{rc}; border:1px solid rgba({rh},0.25); flex-shrink:0;">{role}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button("Sign out", use_container_width=True, key="btn_logout"):
-            # Never restore the signed-out session again within this session.
-            st.session_state["_signed_out"] = True
-            # Defer the cookie clear to the next run so its clearing frame renders.
-            st.session_state["_clear_cookie_pending"] = True
-            st.session_state.pop("_persist_session", None)
-            # Drop the previous operator's password so it is never resubmitted.
-            st.session_state.pop("login_password", None)
-            del st.session_state["user"]
-            st.rerun()
 
         # Footer
         st.markdown(

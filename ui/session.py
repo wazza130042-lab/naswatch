@@ -45,6 +45,21 @@ def _clear_session_cookie() -> None:
     )
 
 
+def sign_out() -> None:
+    """Tear down the operator session (caller must call st.rerun()).
+
+    Never restore the signed-out session again within this session, and defer the
+    cookie clear to the next run so its clearing frame actually renders — an
+    in-flight st.rerun() would cancel it.
+    """
+    st.session_state["_signed_out"] = True
+    st.session_state["_clear_cookie_pending"] = True
+    st.session_state.pop("_persist_session", None)
+    # Drop the previous operator's password so it is never resubmitted.
+    st.session_state.pop("login_password", None)
+    st.session_state.pop("user", None)
+
+
 def _restore_session() -> None:
     """Rebuild the signed-in user from the session cookie after a page refresh."""
     if "user" in st.session_state:
