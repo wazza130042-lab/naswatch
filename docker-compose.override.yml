@@ -1,0 +1,23 @@
+# Development override — loaded automatically by `docker compose`.
+#
+# Bind-mounts the UI (and its supporting source) into the container so Streamlit
+# hot-reloads on save. No `docker compose build` needed while iterating on the UI.
+#
+#   docker compose up -d naswatch-ui      # uses this override
+#   # edit ui/... -> the browser reruns automatically
+#
+# To run the production/baked image instead, ignore this file explicitly:
+#
+#   docker compose -f docker-compose.yml up -d
+#
+services:
+  naswatch-ui:
+    volumes:
+      - ./ui:/app/ui
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./config:/app/config
+    environment:
+      # Reload the page as soon as a watched source file changes.
+      STREAMLIT_SERVER_RUN_ON_SAVE: "true"
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: "poll"
