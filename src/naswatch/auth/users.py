@@ -107,19 +107,33 @@ class UserStore:
                 )
                 logger.info("Migrated users table: added column %s", column)
 
+    def needs_bootstrap(self) -> bool:
+        """True while no operator account exists, i.e. first-run setup is needed."""
+        return self.count_users() == 0
+
     def ensure_default_admin(self) -> None:
-        """Bootstrap the initial administrator account if no users exist."""
-        conn, cur = self.dialect.execute("SELECT COUNT(*) AS c FROM users")
-        row = cur.fetchone()
-        self.dialect.close(conn)
-        if int(row["c"]) > 0:
+        """Provision the first administrator **only** when explicitly configured.
+
+        A fresh install starts with an empty account table and no shared secret:
+        the operator creates the first administrator through the UI first-run
+        screen (or ``scripts/create_admin.py``). For unattended installs
+        (containers, CI, infrastructure-as-code) set **both**
+        ``NASWATCH_ADMIN_EMAIL`` and ``NASWATCH_ADMIN_PASSWORD`` to seed the
+        account on boot.
+        """
+        if self.count_users() > 0:
             return
-        username = os.environ.get("NASWATCH_ADMIN_EMAIL", "admin@naswatch.io")
-        password = os.environ.get("NASWATCH_ADMIN_PASSWORD", "naswatch-admin-password")
+        username = (os.environ.get("NASWATCH_ADMIN_EMAIL") or "").strip()
+        password = os.environ.get("NASWATCH_ADMIN_PASSWORD") or ""
+        if not username or not password:
+            logger.info(
+                "No operator accounts yet — first-run setup required "
+                "(UI first-run screen or scripts/create_admin.py)."
+            )
+            return
         self.create_user(username=username, password=password, role=UserRole.ADMIN, org_id="default")
-        logger.warning(
-            "Bootstrapped default admin account '%s'. Change the password before production use.",
-            username,
+        logger.info(
+            "Bootstrapped first administrator %s from environment", username
         )
 
     def _row_to_user(self, row: Any) -> User:

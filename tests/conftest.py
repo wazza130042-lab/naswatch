@@ -88,3 +88,15 @@ def benign_event() -> ParsedSignalingEvent:
         cell_id="0x000000010",
         tac=1,
     )
+
+
+@pytest.fixture(autouse=True)
+def _provision_bootstrap_admin(monkeypatch):
+    """Run tests against a provisioned install (env-seeded first administrator).
+
+    A real fresh install starts with no accounts and shows the UI first-run
+    setup; unattended installs seed the account from the environment. Tests use
+    the environment path so ``UserStore`` has a known admin to authenticate as.
+    """
+    monkeypatch.setenv("NASWATCH_ADMIN_EMAIL", "admin@naswatch.io")
+    monkeypatch.setenv("NASWATCH_ADMIN_PASSWORD", "naswatch-admin-password")

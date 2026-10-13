@@ -114,6 +114,11 @@ flowchart TD
 ## 💼 Commercial & Enterprise Features
 
 ### 1. 🔐 Authentication, Authorization & RBAC
+- **First-Run Setup (no default credentials):** a fresh install ships **no** accounts and no
+  built-in password. The first time the dashboard is opened it shows a **first-run setup** screen
+  that creates the initial administrator (email + password, min 12 chars). Unattended installs seed
+  the account from `NASWATCH_ADMIN_EMAIL` + `NASWATCH_ADMIN_PASSWORD`, or with
+  `python scripts/create_admin.py`; there is no unauthenticated account-creation API.
 - **JWT Bearer Auth:** HS256 signed access and refresh tokens with configurable expiration.
 - **Refresh Token Rotation:** Server-side persisted refresh sessions (`jti`), rotated on every refresh with reuse detection (replay rejection).
 - **SSO / OIDC (Enterprise):** External identity providers (Keycloak, Entra ID, Okta, Auth0) via
@@ -225,6 +230,7 @@ naswatch/
 │
 ├── scripts/
 │   ├── sample_devices.csv      # Initial authorized subscriber dataset
+│   ├── create_admin.py         # Create/reset the first administrator (headless)
 │   ├── seed_inventory.py       # Populates inventory DB from CSV
 │   └── run_pipeline.py         # Headless CLI runner
 │
@@ -283,6 +289,14 @@ uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000
 streamlit run ui/app.py
 ```
 
+On first launch the dashboard shows the **first-run setup** screen to create the initial
+administrator (no default password). To seed it headlessly instead:
+
+```bash
+python3 scripts/create_admin.py --email admin@example.com        # prompts for a password
+# or, for unattended installs: NASWATCH_ADMIN_EMAIL / NASWATCH_ADMIN_PASSWORD
+```
+
 - **Interactive OpenAPI Documentation:** `http://localhost:8000/docs`
 - **SOC Live Dashboard:** `http://localhost:8501`
 - **Prometheus Metrics:** `http://localhost:8000/metrics`
@@ -331,6 +345,12 @@ Deploy the complete stack with one command:
 ```bash
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
+
+> **First administrator:** on a fresh volume the dashboard opens on the **first-run setup** screen
+> (create the initial admin) — there is no default password. For unattended deploys set
+> `NASWATCH_ADMIN_EMAIL` and `NASWATCH_ADMIN_PASSWORD` in `.env` (the production compose requires the
+> password), or run `python scripts/create_admin.py` (also useful for recovery). Since a Site's
+> topology and accounts live in the `naswatch-data` volume, updates never recreate them.
 
 > **Storage & scaling:** NASWatch auto-selects PostgreSQL when `NASWATCH_DB_URL` is set
 > (`postgres://` / `postgresql://`) and otherwise persists to SQLite (WAL mode) via `./data`.

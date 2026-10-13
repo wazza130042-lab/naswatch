@@ -54,12 +54,26 @@ def test_user_store_crud_and_authentication():
     assert store.get_by_id(user.id) is None
 
 
-def test_user_store_bootstraps_default_admin():
+def test_user_store_bootstraps_admin_from_environment():
+    """An unattended install seeds the first admin from the environment."""
     store = UserStore(db_path=":memory:")
+    assert store.needs_bootstrap() is False
     admin = store.get_by_username("admin@naswatch.io")
     assert admin is not None
     assert admin.role == UserRole.ADMIN
     assert store.authenticate("admin@naswatch.io", "naswatch-admin-password") is not None
+
+
+def test_user_store_first_run_starts_without_accounts(monkeypatch):
+    """A fresh install starts empty and asks for first-run setup, with no
+    hard-coded default credentials."""
+    monkeypatch.delenv("NASWATCH_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("NASWATCH_ADMIN_PASSWORD", raising=False)
+    store = UserStore(db_path=":memory:")
+    assert store.needs_bootstrap() is True
+    assert store.count_users() == 0
+    assert store.get_by_username("admin@naswatch.io") is None
+    assert store.authenticate("admin@naswatch.io", "naswatch-admin-password") is None
 
 
 # ---------------------------------------------------------------------------

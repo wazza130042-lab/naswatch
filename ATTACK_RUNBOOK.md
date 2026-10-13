@@ -29,6 +29,10 @@ docker compose ps          # naswatch-api, naswatch-ui, naswatch-prometheus heal
 ```
 
 Open the dashboard: <http://localhost:8501> and sign in as `admin@naswatch.io`.
+On a **fresh install** there is no default password: the dashboard opens a **first-run setup**
+screen to create the initial administrator, or seed it unattended with
+`NASWATCH_ADMIN_EMAIL=admin@naswatch.io NASWATCH_ADMIN_PASSWORD=naswatch-admin-password` before
+`docker compose up -d` (a volume that already has accounts skips this).
 If the account has two-factor authentication enrolled (**Settings ⚙ → Security**), the login form
 asks for the 6-digit authenticator-app code after the password.
 

@@ -16,6 +16,9 @@ from ui.theme import CSS
 _SECOND_FACTOR_TTL_SECONDS = 300
 _SECOND_FACTOR_MAX_ATTEMPTS = 5
 
+# Minimum length for the first administrator's password (matches the REST API).
+_MIN_PASSWORD_LENGTH = 12
+
 
 def _sign_in(user) -> None:
     """Open the operator session for ``user`` and rerun into the console."""
@@ -140,8 +143,83 @@ def _render_demo_users() -> None:
     )
 
 
+def _bootstrap_required() -> bool:
+    """True while the identity store has no accounts, i.e. first-run setup."""
+    store = get_user_store()
+    if store is None:
+        return False
+    try:
+        return bool(store.needs_bootstrap())
+    except Exception:
+        return False
+
+
+def _render_first_run() -> None:
+    """Create the first administrator on a brand-new install (no accounts)."""
+    st.markdown(
+        '<div class="auth-heading">[ FIRST-RUN SETUP ]</div>'
+        '<div class="auth-copy">No operator account exists yet. Create the first '
+        'administrator for this NASWatch instance.</div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("operator_bootstrap", clear_on_submit=False):
+        email = st.text_input("> admin email", value="admin@naswatch.io", autocomplete="username")
+        password = st.text_input(
+            "> password",
+            type="password",
+            placeholder=f"min {_MIN_PASSWORD_LENGTH} characters",
+            autocomplete="new-password",
+            key="bootstrap_password",
+        )
+        confirm = st.text_input(
+            "> confirm password",
+            type="password",
+            placeholder="repeat password",
+            autocomplete="new-password",
+            key="bootstrap_confirm",
+        )
+        submitted = st.form_submit_button("> CREATE ADMINISTRATOR", use_container_width=True, type="primary")
+
+    if not submitted:
+        st.caption(
+            "Unattended installs can seed this account instead with the "
+            "NASWATCH_ADMIN_EMAIL and NASWATCH_ADMIN_PASSWORD environment variables, "
+            "or by running scripts/create_admin.py."
+        )
+        return
+
+    email = (email or "").strip()
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        st.error("Enter a valid email address for the administrator.")
+        return
+    if len(password or "") < _MIN_PASSWORD_LENGTH:
+        st.error(f"Use at least {_MIN_PASSWORD_LENGTH} characters for the administrator password.")
+        return
+    if password != confirm:
+        st.error("The two passwords do not match.")
+        return
+    store = get_user_store()
+    if store is None:
+        st.error("Identity store is unavailable. Please try again shortly.")
+        return
+    if not store.needs_bootstrap():
+        st.warning("An account already exists. Please sign in.")
+        return
+    try:
+        from naswatch.storage.models import UserRole
+
+        user = store.create_user(email, password, UserRole.ADMIN)
+    except Exception:
+        st.error("Could not create the administrator account. Please try again.")
+        return
+    _sign_in(user)
+
+
 def _render_auth_column() -> None:
-    """Password step, or the TOTP step when a password has been verified."""
+    """First-run setup, the password step, or the TOTP step once a password is verified."""
+    if _bootstrap_required():
+        _render_first_run()
+        return
     if _second_factor_pending():
         _render_second_factor()
     else:
@@ -305,7 +383,14 @@ def login_page():
         r"| |\  |/ ___ \ ___) | \ V  V / (_| | || (__| | | |",
         r"|_| \_/_/   \_\____/   \_/\_/ \__,_|\__\___|_| |_|",
     ])
-    awaiting_2fa = _second_factor_pending()
+    bootstrap = _bootstrap_required()
+    awaiting_2fa = _second_factor_pending() and not bootstrap
+    if bootstrap:
+        prompt_text = "first-run setup — create the administrator"
+    elif awaiting_2fa:
+        prompt_text = "awaiting authenticator code"
+    else:
+        prompt_text = "awaiting operator login"
     with st.container(key="auth-terminal", border=False):
         st.markdown(
             '<div class="terminal-chrome"><i class="chrome-dot"></i><i class="chrome-dot"></i>'
@@ -322,7 +407,7 @@ def login_page():
                 '<div class="stream-heading"><span>$ tail -f nas-events.log</span><span>SAMPLE STREAM</span></div>'
                 f'<div class="event-stream">{events_html}</div>'
                 '<div class="terminal-prompt">$ <span>'
-                + ("awaiting authenticator code" if awaiting_2fa else "awaiting operator login")
+                + prompt_text
                 + '</span><span class="cur"></span></div></div>',
                 unsafe_allow_html=True,
             )

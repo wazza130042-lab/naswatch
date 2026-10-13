@@ -93,8 +93,7 @@ def main() -> None:
     user = st.session_state["user"]
     role = user["role"]
     username = user["username"]
-    db_path = "data/inventory.db"
-    repo = get_repository(db_path)
+    repo = get_repository()
 
     # Freshly authenticated: persist the session cookie on the first signed-in run.
     if st.session_state.pop("_persist_session", False):
