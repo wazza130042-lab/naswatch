@@ -11,13 +11,13 @@ import streamlit as st
 
 from naswatch.storage.models import Alert, Device
 
-# CSS variables from the redesign
+# Colors shared with the SOC console theme in ui.app
 C = {
-    "bg-base": "#0A0D12", "bg-panel": "#10141B", "bg-raised": "#161B24", "bg-input": "#0D1117",
-    "border": "#212733", "border-soft": "#191E28",
-    "text-1": "#E7EAEE", "text-2": "#8B93A3", "text-3": "#525A69",
-    "signal": "#3DDC97", "signal-dim": "#1F5E48",
-    "crit": "#E5484D", "high": "#F5A524", "med": "#E8C468", "low": "#5B8DEF",
+    "bg-base": "#030A14", "bg-panel": "#061226", "bg-raised": "#0A1B35", "bg-input": "#030D1B",
+    "border": "#174A83", "border-soft": "#102E50",
+    "text-1": "#D6E7FA", "text-2": "#8CAED3", "text-3": "#5F83AA",
+    "signal": "#12D4E8", "signal-dim": "#13547B",
+    "crit": "#FF466B", "high": "#FFB82F", "med": "#4CA8FF", "low": "#11D9ED",
 }
 
 
@@ -56,16 +56,16 @@ def render_severity_chart(alerts: list[Alert]) -> None:
         st.markdown(
             f"""
             <div class="section-card" style="text-align:center; padding:36px 20px;">
-                <div style="width:36px; height:36px; border-radius:50%; background:rgba(61,220,151,0.08);
-                            border:1px solid rgba(61,220,151,0.15); display:inline-flex; align-items:center;
+            <div style="width:36px; height:36px; border-radius:9px; background:rgba(76,168,255,0.10);
+                            border:1px solid rgba(76,168,255,0.22); display:inline-flex; align-items:center;
                             justify-content:center; margin-bottom:10px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="{C['signal']}" stroke-width="1.6" width="17" height="17">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="{C['low']}" stroke-width="1.6" width="17" height="17">
                         <path d="M12 2 3 6v6c0 5 3.8 8.7 9 10 5.2-1.3 9-5 9-10V6l-9-4Z"/>
-                        <path d="M9 12l2 2 4-4"/>
+                        <path d="M12 8v5m0 3h.01"/>
                     </svg>
                 </div>
-                <div style="font-size:13px; font-weight:600; color:{C['signal']};">All Clear</div>
-                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">No active threats detected</div>
+                <div style="font-size:13px; font-weight:600; color:{C['low']};">No alert data</div>
+                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">Replay a signaling capture to begin checking for threats</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -102,7 +102,7 @@ def render_severity_chart(alerts: list[Alert]) -> None:
                     <circle cx="75" cy="75" r="58" fill="none" stroke="{C['border-soft']}" stroke-width="18"/>
                     {circles}
                     <text x="75" y="71" text-anchor="middle" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="22" font-weight="500">{total}</text>
-                    <text x="75" y="88" text-anchor="middle" fill="{C['text-3']}" font-family="IBM Plex Sans" font-size="10">alerts</text>
+                    <text x="75" y="88" text-anchor="middle" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="10">alerts</text>
                 </svg>
                 <div>{legend_rows}</div>
             </div>
@@ -120,8 +120,8 @@ def render_threat_timeline(alerts: list[Alert]) -> None:
         st.markdown(
             f"""
             <div class="section-card" style="text-align:center; padding:36px 20px;">
-                <div style="width:36px; height:36px; border-radius:50%; background:rgba(91,141,239,0.08);
-                            border:1px solid rgba(91,141,239,0.15); display:inline-flex; align-items:center;
+                <div style="width:36px; height:36px; border-radius:9px; background:rgba(76,168,255,0.08);
+                            border:1px solid rgba(76,168,255,0.18); display:inline-flex; align-items:center;
                             justify-content:center; margin-bottom:10px;">
                     <svg viewBox="0 0 24 24" fill="none" stroke="{C['low']}" stroke-width="1.6" width="17" height="17">
                         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -187,39 +187,39 @@ def render_interactive_topology_graph(alerts: list[Alert], devices: list[Device]
         <div class="section-card" style="padding:30px;">
             <svg width="100%" height="360" viewBox="0 0 980 360">
                 <!-- Edges -->
-                <line x1="140" y1="110" x2="480" y2="180" stroke="#232936" stroke-width="1.5"/>
-                <line x1="140" y1="260" x2="480" y2="180" stroke="#232936" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="60"  stroke="#232936" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="180" stroke="#232936" stroke-width="1.5"/>
-                <line x1="480" y1="180" x2="840" y2="300" stroke="#232936" stroke-width="1.5"/>
+                <line x1="140" y1="110" x2="480" y2="180" stroke="#174A83" stroke-width="1.5"/>
+                <line x1="140" y1="260" x2="480" y2="180" stroke="#174A83" stroke-width="1.5"/>
+                <line x1="480" y1="180" x2="840" y2="60"  stroke="#174A83" stroke-width="1.5"/>
+                <line x1="480" y1="180" x2="840" y2="180" stroke="#174A83" stroke-width="1.5"/>
+                <line x1="480" y1="180" x2="840" y2="300" stroke="#174A83" stroke-width="1.5"/>
 
                 <!-- gNB-Alpha -->
                 <rect x="108" y="94" width="32" height="32" rx="4" fill="{C['bg-raised']}" stroke="{C['signal']}" stroke-width="1.5"/>
-                <text x="150" y="105" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">gNB-Alpha</text>
+                <text x="150" y="105" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">gNB-Alpha</text>
                 <text x="150" y="121" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">0x10</text>
 
                 <!-- gNB-Beta -->
                 <rect x="108" y="244" width="32" height="32" rx="4" fill="{C['bg-raised']}" stroke="{gnb_beta_color}" stroke-width="1.5"/>
-                <text x="150" y="255" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">gNB-Beta</text>
+                <text x="150" y="255" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">gNB-Beta</text>
                 <text x="150" y="271" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">0x20</text>
 
                 <!-- AMF -->
                 <polygon points="480,150 512,180 480,210 448,180" fill="{C['bg-raised']}" stroke="{C['low']}" stroke-width="1.6"/>
-                <text x="480" y="235" text-anchor="middle" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">5G Core AMF</text>
+                <text x="480" y="235" text-anchor="middle" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">5G Core AMF</text>
 
                 <!-- Slice 1 -->
                 <polygon points="840,44 858,60 840,76 822,60" fill="{C['bg-raised']}" stroke="{C['low']}" stroke-width="1.5"/>
-                <text x="866" y="55" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">Slice 1</text>
+                <text x="866" y="55" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 1</text>
                 <text x="866" y="71" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">eMBB</text>
 
                 <!-- Slice 2 -->
                 <polygon points="840,164 858,180 840,196 822,180" fill="{C['bg-raised']}" stroke="{slice2_color}" stroke-width="1.5"/>
-                <text x="866" y="175" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">Slice 2</text>
+                <text x="866" y="175" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 2</text>
                 <text x="866" y="191" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">uRLLC</text>
 
                 <!-- Slice 3 -->
                 <polygon points="840,284 858,300 840,316 822,300" fill="{C['bg-raised']}" stroke="{C['signal']}" stroke-width="1.5"/>
-                <text x="866" y="295" fill="{C['text-1']}" font-family="IBM Plex Sans" font-size="13" font-weight="600">Slice 3</text>
+                <text x="866" y="295" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="13" font-weight="600">Slice 3</text>
                 <text x="866" y="311" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="11">mIoT</text>
             </svg>
         </div>
