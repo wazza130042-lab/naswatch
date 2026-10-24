@@ -23,11 +23,10 @@ import getpass
 import os
 import sys
 
+from naswatch.auth.password_policy import WeakPasswordError, validate_password
 from naswatch.auth.users import UserStore
 from naswatch.storage.factory import get_db_path, get_db_url
 from naswatch.storage.models import UserRole
-
-MIN_PASSWORD_LENGTH = 12
 
 
 def _prompt_password() -> str:
@@ -39,7 +38,7 @@ def _prompt_password() -> str:
     return first
 
 
-def _resolve_password(password: str | None) -> str:
+def _resolve_password(password: str | None, username: str) -> str:
     """Return the password from the CLI, the environment, or an interactive prompt."""
     password = password or os.environ.get("NASWATCH_ADMIN_PASSWORD") or ""
     if not password:
@@ -48,10 +47,9 @@ def _resolve_password(password: str | None) -> str:
                 "error: no password supplied (use --password or NASWATCH_ADMIN_PASSWORD)"
             )
         password = _prompt_password()
-    if len(password) < MIN_PASSWORD_LENGTH:
-        raise SystemExit(
-            f"error: password must be at least {MIN_PASSWORD_LENGTH} characters"
-        )
+    problems = validate_password(password, username=username)
+    if problems:
+        raise SystemExit("error: weak password — " + " ".join(problems))
     return password
 
 
@@ -88,12 +86,18 @@ def main() -> int:
             raise SystemExit(
                 f"error: {username} already exists (use --force to reset its password)"
             )
-        store.reset_password(existing.id, _resolve_password(args.password))
+        try:
+            store.reset_password(existing.id, _resolve_password(args.password, username))
+        except WeakPasswordError as exc:
+            raise SystemExit(f"error: weak password — {exc}")
         store.update_user(existing.id, role=UserRole.ADMIN, active=True)
         print(f"Reset the password for existing administrator {username}.")
         return 0
 
-    store.create_user(username, _resolve_password(args.password), UserRole.ADMIN)
+    try:
+        store.create_user(username, _resolve_password(args.password, username), UserRole.ADMIN)
+    except WeakPasswordError as exc:
+        raise SystemExit(f"error: weak password — {exc}")
     print(f"Created administrator {username}.")
     return 0
 

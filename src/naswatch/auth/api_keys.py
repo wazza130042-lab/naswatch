@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import sqlite3
 from datetime import UTC, datetime
+
+from naswatch.storage.db import SqlBackend
 
 API_KEY_PREFIX = "nw_"
 API_KEY_BYTES = 32
@@ -28,26 +29,14 @@ def generate_api_key() -> tuple[str, str]:
 
 
 class APIKeyStore:
-    """SQLite-backed API key registry."""
+    """SQL-backed API key registry shared with SQLite or PostgreSQL deployments."""
 
-    def __init__(self, db_path: str = "data/inventory.db") -> None:
-        self.db_path = db_path
-        self._memory_conn: sqlite3.Connection | None = None
-        if self.db_path == ":memory:":
-            self._memory_conn = sqlite3.connect(":memory:")
-            self._memory_conn.row_factory = sqlite3.Row
+    def __init__(self, db_path: str = "data/inventory.db", db_url: str | None = None) -> None:
+        self.backend = SqlBackend(db_path=db_path, db_url=db_url)
         self._ensure_table()
 
-    def _connect(self) -> sqlite3.Connection:
-        if self._memory_conn is not None:
-            return self._memory_conn
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
     def _ensure_table(self) -> None:
-        conn = self._connect()
-        conn.execute("""
+        self.backend.executescript("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id         TEXT PRIMARY KEY,
                 name       TEXT NOT NULL,
@@ -59,9 +48,6 @@ class APIKeyStore:
                 revoked    INTEGER NOT NULL DEFAULT 0
             )
         """)
-        conn.commit()
-        if self._memory_conn is None:
-            conn.close()
 
     def create_key(self, name: str, role: str = "viewer", org_id: str = "default", expires_at: str | None = None) -> tuple[str, str]:
         """
@@ -71,14 +57,12 @@ class APIKeyStore:
         import uuid
         raw_key, key_hash = generate_api_key()
         key_id = str(uuid.uuid4())
-        conn = self._connect()
-        conn.execute(
+        conn, _ = self.backend.execute(
             "INSERT INTO api_keys (id, name, key_hash, role, org_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
             (key_id, name, key_hash, role, org_id, datetime.now(UTC).isoformat(), expires_at),
         )
-        conn.commit()
-        if self._memory_conn is None:
-            conn.close()
+        self.backend.commit(conn)
+        self.backend.close(conn)
         return raw_key, key_id
 
     def validate_key(self, raw_key: str) -> dict | None:
@@ -87,12 +71,11 @@ class APIKeyStore:
         Returns user-like payload dict if valid, None if invalid/revoked.
         """
         key_hash = _hash_key(raw_key)
-        conn = self._connect()
-        row = conn.execute(
+        conn, cur = self.backend.execute(
             "SELECT * FROM api_keys WHERE key_hash=? AND revoked=0", (key_hash,)
-        ).fetchone()
-        if self._memory_conn is None:
-            conn.close()
+        )
+        row = cur.fetchone()
+        self.backend.close(conn)
         if not row:
             return None
         if row["expires_at"]:
@@ -105,21 +88,20 @@ class APIKeyStore:
         return {"sub": row["name"], "role": row["role"], "org_id": row["org_id"], "key_id": row["id"]}
 
     def revoke_key(self, key_id: str) -> bool:
-        conn = self._connect()
-        cur = conn.execute("UPDATE api_keys SET revoked=1 WHERE id=?", (key_id,))
-        conn.commit()
+        conn, cur = self.backend.execute("UPDATE api_keys SET revoked=1 WHERE id=?", (key_id,))
+        self.backend.commit(conn)
         rowcount = cur.rowcount
-        if self._memory_conn is None:
-            conn.close()
+        self.backend.close(conn)
         return rowcount > 0
 
     def list_keys(self, org_id: str | None = None) -> list[dict]:
-        conn = self._connect()
-        if org_id:
-            rows = conn.execute("SELECT id,name,role,org_id,created_at,expires_at,revoked FROM api_keys WHERE org_id=?", (org_id,)).fetchall()
-        else:
-            rows = conn.execute("SELECT id,name,role,org_id,created_at,expires_at,revoked FROM api_keys").fetchall()
+        conn, cur = self.backend.execute(
+            "SELECT id,name,role,org_id,created_at,expires_at,revoked FROM api_keys WHERE org_id=?",
+            (org_id,),
+        ) if org_id else self.backend.execute(
+            "SELECT id,name,role,org_id,created_at,expires_at,revoked FROM api_keys"
+        )
+        rows = cur.fetchall()
         result = [dict(r) for r in rows]
-        if self._memory_conn is None:
-            conn.close()
+        self.backend.close(conn)
         return result

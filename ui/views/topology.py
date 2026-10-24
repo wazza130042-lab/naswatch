@@ -16,6 +16,7 @@ from ui.components import (
     render_cell_table, render_slice_matrix, render_topology_graph,
 )
 from ui.rbac import has
+from ui.store import log_ui_action
 from ui.topology_data import build_topology, resolve_inventory
 
 
@@ -50,6 +51,9 @@ def _upload_panel(graph) -> None:
                 "Remove uploaded structure", key="rm_net", use_container_width=True
             ):
                 network_inventory.clear()
+                audit_error = log_ui_action(st.session_state.get("user", {}), "network_structure.remove", "network-structure")
+                if audit_error:
+                    st.error(f"Structure removed, but its audit record failed: {audit_error}")
                 st.toast("Uploaded network structure removed")
                 st.rerun()
 
@@ -81,6 +85,12 @@ def _upload_panel(graph) -> None:
 
         if st.button("Save structure", type="primary", key="save_net"):
             network_inventory.save(structure)
+            audit_error = log_ui_action(
+                st.session_state.get("user", {}), "network_structure.save", "network-structure",
+                {"organization": org, "cell_count": len(structure.get("cells", [])), "file": uploaded.name},
+            )
+            if audit_error:
+                st.error(f"Structure saved, but its audit record failed: {audit_error}")
             st.toast("Network structure saved")
             st.rerun()
 

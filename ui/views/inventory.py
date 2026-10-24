@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.rbac import has
+from ui.store import log_ui_action
 from ui.components import (
     render_alert_item, render_kpi_cards,
     render_mitre_attack_matrix,
@@ -89,6 +90,9 @@ def render(ctx):
                         slice_objs.append(SA(sst=int(parts[0]), sd=parts[1] if len(parts) > 1 else None, name=s))
                     repo.add(Device(imsi=f_imsi.strip(), imei=f_imei.strip(), owner_name=f_owner.strip(),
                                     device_model=f_model.strip(), status=DeviceStatus.ACTIVE, allowed_slices=slice_objs))
+                    audit_error = log_ui_action(user, "device.provision", f_imsi.strip(), {"device_model": f_model.strip(), "slice_count": len(slice_objs)})
+                    if audit_error:
+                        st.error(f"Subscriber provisioned, but its audit record failed: {audit_error}")
                     st.toast(f"Provisioned {f_imsi}")
                     st.rerun()
 
@@ -110,4 +114,3 @@ def render(ctx):
         st.dataframe(pd.DataFrame(dev_rows), use_container_width=True, hide_index=True)
     else:
         st.warning("No devices provisioned yet.")
-

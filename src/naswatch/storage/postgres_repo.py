@@ -10,7 +10,7 @@ and adds tenant (`org_id`) scoping on every query.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from naswatch.logging_config import get_logger
@@ -83,8 +83,14 @@ class PostgresRepository(DeviceRepository, AlertRepository):
                     target_slice TEXT,
                     mitigation_status TEXT NOT NULL DEFAULT 'NEW',
                     raw_event_json TEXT NOT NULL DEFAULT '{}',
-                    org_id TEXT NOT NULL DEFAULT 'default'
+                    org_id TEXT NOT NULL DEFAULT 'default',
+                    assigned_to_id TEXT,
+                    assigned_to_name TEXT,
+                    claimed_at TEXT
                 );
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assigned_to_id TEXT;
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assigned_to_name TEXT;
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS claimed_at TEXT;
                 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC);
                 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
                 CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule_type);
@@ -133,16 +139,24 @@ class PostgresRepository(DeviceRepository, AlertRepository):
             mitigation_status=row["mitigation_status"],
             raw_event=json.loads(row["raw_event_json"]),
             org_id=row["org_id"],
+            assigned_to_id=row.get("assigned_to_id"),
+            assigned_to_name=row.get("assigned_to_name"),
+            claimed_at=datetime.fromisoformat(row["claimed_at"]) if row.get("claimed_at") else None,
         )
 
     # ------------------------------------------------------------------
     # DeviceRepository
     # ------------------------------------------------------------------
-    def get_by_imsi(self, imsi: str) -> Device | None:
+    def get_by_imsi(self, imsi: str, org_id: str | None = None) -> Device | None:
         if not imsi:
             return None
+        query = "SELECT * FROM devices WHERE imsi = %s"
+        params: list[Any] = [imsi]
+        if org_id:
+            query += " AND org_id = %s"
+            params.append(org_id)
         with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM devices WHERE imsi = %s", (imsi,))
+            cur = conn.execute(query, params)
             row = cur.fetchone()
         return self._row_to_device(row) if row else None
 
@@ -224,8 +238,8 @@ class PostgresRepository(DeviceRepository, AlertRepository):
                 INSERT INTO alerts (
                     id, timestamp, rule_type, severity, title, description,
                     imsi, imei, cell_id, target_slice, mitigation_status,
-                    raw_event_json, org_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    raw_event_json, org_id, assigned_to_id, assigned_to_name, claimed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     alert.id,
@@ -241,6 +255,9 @@ class PostgresRepository(DeviceRepository, AlertRepository):
                     alert.mitigation_status,
                     json.dumps(alert.raw_event or {}),
                     target_org,
+                    alert.assigned_to_id,
+                    alert.assigned_to_name,
+                    alert.claimed_at.isoformat() if alert.claimed_at else None,
                 ),
             )
         return True
@@ -282,11 +299,67 @@ class PostgresRepository(DeviceRepository, AlertRepository):
             row = cur.fetchone()
         return self._row_to_alert(row) if row else None
 
-    def update_mitigation_status(self, alert_id: str, new_status: str) -> bool:
+    def update_mitigation_status(
+        self, alert_id: str, new_status: str, *, actor_id: str | None = None,
+        org_id: str | None = None, admin_override: bool = False,
+    ) -> bool:
+        status = new_status.upper()
+        if status not in {"NEW", "INVESTIGATING", "BLOCKED", "RESOLVED"}:
+            return False
+        query = "UPDATE alerts SET mitigation_status = %s WHERE id = %s"
+        params: list[Any] = [status, alert_id]
+        if org_id:
+            query += " AND org_id = %s"
+            params.append(org_id)
+        if actor_id and not admin_override:
+            query += " AND assigned_to_id = %s"
+            params.append(actor_id)
+        with self._connect() as conn:
+            cur = conn.execute(query, params)
+        return cur.rowcount > 0
+
+    def claim_alert(self, alert_id: str, user_id: str, username: str, org_id: str) -> bool:
+        """Atomically claim an unassigned incident; concurrent claims serialize in PostgreSQL."""
+        now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE alerts SET mitigation_status = %s WHERE id = %s",
-                (new_status.upper(), alert_id),
+                """UPDATE alerts SET assigned_to_id = %s, assigned_to_name = %s, claimed_at = %s,
+                   mitigation_status = CASE WHEN mitigation_status = 'NEW' THEN 'INVESTIGATING' ELSE mitigation_status END
+                   WHERE id = %s AND org_id = %s AND (assigned_to_id IS NULL OR assigned_to_id = %s)""",
+                (user_id, username, now, alert_id, org_id, user_id),
+            )
+        return cur.rowcount > 0
+
+    def assign_alert(
+        self, alert_id: str, user_id: str, username: str, org_id: str, *, allow_reassign: bool = False
+    ) -> bool:
+        """Assign an incident atomically; reassignment is an administrator action."""
+        now = datetime.now(UTC).isoformat()
+        owner_clause = "" if allow_reassign else " AND (assigned_to_id IS NULL OR assigned_to_id = %s)"
+        params: list[Any] = [user_id, username, now, alert_id, org_id]
+        if not allow_reassign:
+            params.append(user_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET assigned_to_id = %s, assigned_to_name = %s, claimed_at = %s "
+                "WHERE id = %s AND org_id = %s" + owner_clause,
+                params,
+            )
+        return cur.rowcount > 0
+
+    def release_alert(
+        self, alert_id: str, user_id: str, org_id: str, *, admin_override: bool = False
+    ) -> bool:
+        owner_clause = "" if admin_override else " AND assigned_to_id = %s"
+        params: list[Any] = [alert_id, org_id]
+        if not admin_override:
+            params.append(user_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET assigned_to_id = NULL, assigned_to_name = NULL, claimed_at = NULL, "
+                "mitigation_status = CASE WHEN mitigation_status = 'INVESTIGATING' THEN 'NEW' ELSE mitigation_status END "
+                "WHERE id = %s AND org_id = %s" + owner_clause,
+                params,
             )
         return cur.rowcount > 0
 

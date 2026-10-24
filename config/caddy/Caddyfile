@@ -6,14 +6,14 @@
 #
 # Local/trial setup (self-signed):
 #   NASWATCH_FQDN=localhost
-#   NASWATCH_TLS_MODE=internal
+#   NASWATCH_TLS_MODE="tls internal"
 #
 # See .env.example for the full variable reference.
 
 {$NASWATCH_FQDN}:443 {
 	encode gzip zstd
 
-	tls {$NASWATCH_TLS_MODE:internal}
+	{$NASWATCH_TLS_MODE:tls internal}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

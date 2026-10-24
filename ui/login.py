@@ -1,4 +1,4 @@
-"""Operator login screen (password + optional TOTP second factor)."""
+"""Operator login screen (password plus mandatory authenticator factor)."""
 from __future__ import annotations
 
 import time
@@ -8,8 +8,11 @@ from html import escape
 import streamlit as st
 
 from naswatch.auth import totp
-from ui.store import get_user_store
+from naswatch.auth.password_policy import WeakPasswordError, evaluate
+from naswatch.auth.users import BootstrapAlreadyComplete
+from ui.store import get_user_store, log_ui_action
 from ui.theme import CSS
+from ui.totp_enroll import render_enrollment
 
 # How long the pending second-factor prompt stays usable, and how many wrong
 # codes we accept before making the operator start the login again.
@@ -22,16 +25,51 @@ _MIN_PASSWORD_LENGTH = 12
 
 def _sign_in(user) -> None:
     """Open the operator session for ``user`` and rerun into the console."""
+    previous_user = st.session_state.get("user") or {}
+    if previous_user.get("id") != user.id:
+        for key in ("last_events", "inspected_count", "incident_selection", "global_search", "event_detail_selection"):
+            st.session_state.pop(key, None)
     st.session_state["user"] = {
         "id": user.id, "username": user.username,
         "role": user.role.value, "org_id": user.org_id,
     }
+    audit_error = log_ui_action(
+        {"username": user.username, "org_id": user.org_id},
+        "auth.login.success", user.id, {"role": user.role.value, "method": "password+totp"},
+    )
+    if audit_error:
+        st.session_state["_audit_warning"] = f"Sign-in succeeded, but its audit record failed: {audit_error}"
     # Persist the session so a refresh keeps the operator signed in.
     st.session_state["_persist_session"] = True
     st.session_state.pop("_pending_2fa", None)
+    st.session_state.pop("_pending_enroll", None)
     st.session_state.pop("login_totp_code", None)
     st.session_state.pop("login_password", None)
     st.rerun()
+
+
+def _start_enrollment(user) -> None:
+    """Park a verified password until the operator arms their second factor.
+
+    Enrolment is mandatory: an account without 2FA never reaches ``_sign_in``.
+    """
+    st.session_state["_pending_enroll"] = {
+        "user_id": user.id,
+        "username": user.username,
+        "started": time.time(),
+    }
+    st.session_state.pop("login_password", None)
+    st.rerun()
+
+
+def _enrollment_pending() -> bool:
+    pending = st.session_state.get("_pending_enroll")
+    if not isinstance(pending, dict):
+        return False
+    if time.time() - float(pending.get("started", 0)) > _SECOND_FACTOR_TTL_SECONDS:
+        st.session_state.pop("_pending_enroll", None)
+        return False
+    return True
 
 
 def _start_second_factor(user) -> None:
@@ -79,19 +117,32 @@ def _render_first_factor() -> None:
         return
     user = store.authenticate(username, password)
     if user is None:
+        audit_error = log_ui_action(
+            {"username": (username or "unknown").strip().lower(), "org_id": "default"},
+            "auth.login.failure", "login", {"reason": "invalid_credentials"},
+        )
+        if audit_error:
+            st.session_state["_audit_warning"] = audit_error
         st.error("We couldn't sign you in with those credentials.")
         return
     if user.totp_enabled and user.totp_secret:
         _start_second_factor(user)
     else:
-        _sign_in(user)
+        # 2FA is mandatory: no account reaches the console without a second factor.
+        _start_enrollment(user)
 
 
 def _render_second_factor() -> None:
     pending = st.session_state.get("_pending_2fa") or {}
     username = pending.get("username", "")
     store = get_user_store()
-    user = store.get_by_id(pending["user_id"]) if store and pending.get("user_id") else None
+    try:
+        user = store.get_by_id(pending["user_id"]) if store and pending.get("user_id") else None
+    except Exception:
+        user = None
+        st.error("Authentication storage is unavailable. Please try signing in again.")
+        st.session_state.pop("_pending_2fa", None)
+        return
     if not user or not user.active or not user.totp_enabled or not user.totp_secret:
         st.session_state.pop("_pending_2fa", None)
         st.error("This account no longer has two-factor authentication enabled. Please sign in again.")
@@ -114,12 +165,30 @@ def _render_second_factor() -> None:
 
     if st.button("← Back", key="totp_back", use_container_width=True):
         st.session_state.pop("_pending_2fa", None)
+        st.session_state.pop("login_totp_code", None)
         st.rerun()
 
     if not submitted:
         return
-    if totp.verify(user.totp_secret, code):
-        _sign_in(user)
+    matched_counter = totp.matching_counter(user.totp_secret, code)
+    if matched_counter is not None:
+        try:
+            accepted = store.consume_totp_counter(user.id, matched_counter)
+        except Exception:
+            accepted = False
+            st.error("Could not verify your code with the identity store. Please sign in again.")
+            st.session_state.pop("_pending_2fa", None)
+            return
+        if accepted:
+            _sign_in(user)
+            return
+        st.error("That code has already been used or expired. Wait for a fresh code and try again.")
+        audit_error = log_ui_action(
+            {"username": user.username, "org_id": user.org_id},
+            "auth.mfa.failure", user.id, {"reason": "reused_or_expired_code"},
+        )
+        if audit_error:
+            st.session_state["_audit_warning"] = audit_error
         return
     attempts = int(pending.get("attempts", 0)) + 1
     pending["attempts"] = attempts
@@ -131,27 +200,60 @@ def _render_second_factor() -> None:
         st.error("Too many incorrect codes. Please sign in again.")
     else:
         st.error(f"That code isn't valid. {remaining} attempt{'s' if remaining != 1 else ''} left.")
+    audit_error = log_ui_action(
+        {"username": user.username, "org_id": user.org_id},
+        "auth.mfa.failure", user.id, {"attempt": attempts, "remaining": max(remaining, 0)},
+    )
+    if audit_error:
+        st.session_state["_audit_warning"] = audit_error
 
 
-def _render_demo_users() -> None:
+def _render_enrollment_required() -> None:
+    """Forced first-login enrolment: a code must be proven before sign-in."""
+    pending = st.session_state.get("_pending_enroll") or {}
+    username = pending.get("username", "")
+    store = get_user_store()
+    try:
+        user = store.get_by_id(pending["user_id"]) if store and pending.get("user_id") else None
+    except Exception:
+        user = None
+        st.error("Authentication storage is unavailable. Please try signing in again.")
+        st.session_state.pop("_pending_enroll", None)
+        return
+    if not user or not user.active:
+        st.session_state.pop("_pending_enroll", None)
+        st.error("That account is no longer available. Please sign in again.")
+        return
+
     st.markdown(
-        '<div class="demo-users"><div class="demo-heading"><span style="color:#22D3EE">$</span> cat demo_users</div>'
-        '<div class="demo-row"><span>admin@naswatch.io</span><span class="demo-role">admin</span></div>'
-        '<div class="demo-row"><span>analyst@naswatch.io</span><span class="demo-role">analyst</span></div>'
-        '<div class="demo-row"><span>viewer@naswatch.io</span><span class="demo-role">viewer</span></div></div>',
+        '<div class="auth-heading">[ TWO-FACTOR ENROLMENT ]</div>'
+        '<div class="auth-copy">This instance requires every operator to enrol an '
+        f'authenticator app before signing in, <b>{escape(username)}</b>.</div>',
         unsafe_allow_html=True,
     )
+    if render_enrollment(
+        store,
+        user,
+        key_prefix="login",
+        submit_label="> ENABLE 2FA & CONTINUE",
+        notice="Set up your authenticator app now — you will need it at every sign-in.",
+    ):
+        _sign_in(user)
+
+    if st.button("← Back", key="enroll_back", use_container_width=True):
+        st.session_state.pop("_pending_enroll", None)
+        st.rerun()
 
 
-def _bootstrap_required() -> bool:
+def _bootstrap_required() -> bool | None:
     """True while the identity store has no accounts, i.e. first-run setup."""
     store = get_user_store()
     if store is None:
-        return False
+        return None
     try:
         return bool(store.needs_bootstrap())
     except Exception:
-        return False
+        return None
 
 
 def _render_first_run() -> None:
@@ -167,7 +269,7 @@ def _render_first_run() -> None:
         password = st.text_input(
             "> password",
             type="password",
-            placeholder=f"min {_MIN_PASSWORD_LENGTH} characters",
+            placeholder=f"min {_MIN_PASSWORD_LENGTH} chars, mix cases/numbers/symbols",
             autocomplete="new-password",
             key="bootstrap_password",
         )
@@ -192,36 +294,45 @@ def _render_first_run() -> None:
     if "@" not in email or email.startswith("@") or email.endswith("@"):
         st.error("Enter a valid email address for the administrator.")
         return
-    if len(password or "") < _MIN_PASSWORD_LENGTH:
-        st.error(f"Use at least {_MIN_PASSWORD_LENGTH} characters for the administrator password.")
-        return
     if password != confirm:
         st.error("The two passwords do not match.")
+        return
+    strength = evaluate(password, username=email)
+    if not strength.ok:
+        st.error(" ".join(strength.problems))
         return
     store = get_user_store()
     if store is None:
         st.error("Identity store is unavailable. Please try again shortly.")
         return
-    if not store.needs_bootstrap():
-        st.warning("An account already exists. Please sign in.")
-        return
     try:
-        from naswatch.storage.models import UserRole
-
-        user = store.create_user(email, password, UserRole.ADMIN)
+        user = store.create_first_admin(email, password)
+    except BootstrapAlreadyComplete:
+        st.warning("An administrator account was created in another session. Please sign in.")
+        return
+    except WeakPasswordError as exc:
+        st.error(str(exc))
+        return
     except Exception:
         st.error("Could not create the administrator account. Please try again.")
         return
-    _sign_in(user)
+    # The first administrator must also arm 2FA before entering the console.
+    _start_enrollment(user)
 
 
 def _render_auth_column() -> None:
-    """First-run setup, the password step, or the TOTP step once a password is verified."""
-    if _bootstrap_required():
+    """First-run setup, the password step, forced enrolment, or the TOTP step."""
+    bootstrap_state = _bootstrap_required()
+    if bootstrap_state is None:
+        st.error("Identity storage is unavailable. First-run setup cannot continue until the database is reachable.")
+        return
+    if bootstrap_state:
         _render_first_run()
         return
     if _second_factor_pending():
         _render_second_factor()
+    elif _enrollment_pending():
+        _render_enrollment_required()
     else:
         st.markdown(
             '<div class="auth-heading">[ OPERATOR AUTHENTICATION ]</div>'
@@ -229,7 +340,6 @@ def _render_auth_column() -> None:
             unsafe_allow_html=True,
         )
         _render_first_factor()
-    _render_demo_users()
 
 
 def login_page():
@@ -385,17 +495,20 @@ def login_page():
     ])
     bootstrap = _bootstrap_required()
     awaiting_2fa = _second_factor_pending() and not bootstrap
+    enrolling_2fa = _enrollment_pending() and not bootstrap
     if bootstrap:
         prompt_text = "first-run setup — create the administrator"
     elif awaiting_2fa:
         prompt_text = "awaiting authenticator code"
+    elif enrolling_2fa:
+        prompt_text = "two-factor enrolment required — scan to continue"
     else:
         prompt_text = "awaiting operator login"
     with st.container(key="auth-terminal", border=False):
         st.markdown(
             '<div class="terminal-chrome"><i class="chrome-dot"></i><i class="chrome-dot"></i>'
             '<i class="chrome-dot"></i><span class="chrome-title">naswatch@soc-01: ~ — auth</span>'
-            '<span class="chrome-status"><i class="dot-pulse"></i>SENSOR ONLINE</span></div>',
+            '<span class="chrome-status">SECURE CONSOLE</span></div>',
             unsafe_allow_html=True,
         )
         left, right = st.columns([1.15, 1], gap="small", vertical_alignment="top")

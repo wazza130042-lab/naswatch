@@ -2,9 +2,10 @@
 Role-Based Access Control (RBAC) for NASWatch enterprise API.
 
 Roles:
-  admin   — full access: manage devices, view/mitigate alerts, manage users, API keys
-  analyst — view alerts, trigger SOAR actions, download forensic reports
-  viewer  — read-only: view alerts and device inventory
+  admin   — system administration and security operations
+  analyst — incident investigation and response
+  viewer  — dashboard and sanitized incident summaries
+  auditor — tenant audit records and individual record-signature checks
 """
 from __future__ import annotations
 
@@ -21,24 +22,26 @@ class Role(str, Enum):
     ADMIN = "admin"
     ANALYST = "analyst"
     VIEWER = "viewer"
+    AUDITOR = "auditor"
 
 
 # Permission definitions per role
 ROLE_PERMISSIONS: dict[str, Set[str]] = {
     Role.ADMIN: {
-        "alerts:read", "alerts:mitigate",
-        "devices:read", "devices:write", "devices:delete",
-        "users:manage", "apikeys:manage",
-        "ingest:write", "audit:read",
+        "dashboard:read", "alerts:read", "alerts:evidence", "alerts:mitigate",
+        "devices:read", "devices:sensitive", "devices:write", "devices:delete",
+        "users:manage", "apikeys:manage", "ingest:write", "audit:read",
+        "audit:verify", "reports:export",
     },
     Role.ANALYST: {
-        "alerts:read", "alerts:mitigate",
-        "devices:read",
-        "ingest:write",
+        "dashboard:read", "alerts:read", "alerts:evidence", "alerts:mitigate",
+        "devices:read", "devices:sensitive", "ingest:write", "reports:export",
     },
     Role.VIEWER: {
-        "alerts:read",
-        "devices:read",
+        "dashboard:read", "alerts:read",
+    },
+    Role.AUDITOR: {
+        "audit:read",
     },
 }
 

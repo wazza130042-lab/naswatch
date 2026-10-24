@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,10 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
                     target_slice TEXT,
                     mitigation_status TEXT NOT NULL DEFAULT 'NEW',
                     raw_event_json TEXT NOT NULL DEFAULT '{}',
-                    org_id TEXT NOT NULL DEFAULT 'default'
+                    org_id TEXT NOT NULL DEFAULT 'default',
+                    assigned_to_id TEXT,
+                    assigned_to_name TEXT,
+                    claimed_at TEXT
                 );
             """)
 
@@ -90,6 +93,13 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
                 conn.execute("ALTER TABLE devices ADD COLUMN org_id TEXT NOT NULL DEFAULT 'default'")
             if not self._column_exists(conn, "alerts", "org_id"):
                 conn.execute("ALTER TABLE alerts ADD COLUMN org_id TEXT NOT NULL DEFAULT 'default'")
+            for column, declaration in (
+                ("assigned_to_id", "TEXT"),
+                ("assigned_to_name", "TEXT"),
+                ("claimed_at", "TEXT"),
+            ):
+                if not self._column_exists(conn, "alerts", column):
+                    conn.execute(f"ALTER TABLE alerts ADD COLUMN {column} {declaration}")
 
             conn.executescript("""
                 CREATE INDEX IF NOT EXISTS idx_devices_imei ON devices(imei);
@@ -140,11 +150,16 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
             org_id=row["org_id"] if "org_id" in row.keys() else "default",
         )
 
-    def get_by_imsi(self, imsi: str) -> Device | None:
+    def get_by_imsi(self, imsi: str, org_id: str | None = None) -> Device | None:
         if not imsi:
             return None
+        query = "SELECT * FROM devices WHERE imsi = ?"
+        params: list[Any] = [imsi]
+        if org_id:
+            query += " AND org_id = ?"
+            params.append(org_id)
         with self._get_connection() as conn:
-            cur = conn.execute("SELECT * FROM devices WHERE imsi = ?", (imsi,))
+            cur = conn.execute(query, params)
             row = cur.fetchone()
             if row:
                 return self._row_to_device(row)
@@ -230,6 +245,9 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
             mitigation_status=row["mitigation_status"],
             raw_event=raw_event,
             org_id=row["org_id"] if "org_id" in row.keys() else "default",
+            assigned_to_id=row["assigned_to_id"] if "assigned_to_id" in row.keys() else None,
+            assigned_to_name=row["assigned_to_name"] if "assigned_to_name" in row.keys() else None,
+            claimed_at=datetime.fromisoformat(row["claimed_at"]) if row["claimed_at"] else None,
         )
 
     def record_alert(self, alert: Alert, org_id: str | None = None) -> bool:
@@ -240,8 +258,9 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
                 INSERT INTO alerts (
                     id, timestamp, rule_type, severity, title,
                     description, imsi, imei, cell_id, target_slice,
-                    mitigation_status, raw_event_json, org_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    mitigation_status, raw_event_json, org_id,
+                    assigned_to_id, assigned_to_name, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     alert.id,
@@ -257,6 +276,9 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
                     alert.mitigation_status,
                     json.dumps(alert.raw_event or {}),
                     target_org,
+                    alert.assigned_to_id,
+                    alert.assigned_to_name,
+                    alert.claimed_at.isoformat() if alert.claimed_at else None,
                 ),
             )
         return True
@@ -302,11 +324,67 @@ class SQLiteRepository(DeviceRepository, AlertRepository):
                 return self._row_to_alert(row)
         return None
 
-    def update_mitigation_status(self, alert_id: str, new_status: str) -> bool:
+    def update_mitigation_status(
+        self, alert_id: str, new_status: str, *, actor_id: str | None = None,
+        org_id: str | None = None, admin_override: bool = False,
+    ) -> bool:
+        status = new_status.upper()
+        if status not in {"NEW", "INVESTIGATING", "BLOCKED", "RESOLVED"}:
+            return False
+        query = "UPDATE alerts SET mitigation_status = ? WHERE id = ?"
+        params: list[Any] = [status, alert_id]
+        if org_id:
+            query += " AND org_id = ?"
+            params.append(org_id)
+        if actor_id and not admin_override:
+            query += " AND assigned_to_id = ?"
+            params.append(actor_id)
+        with self._get_connection() as conn:
+            cur = conn.execute(query, params)
+            return cur.rowcount > 0
+
+    def claim_alert(self, alert_id: str, user_id: str, username: str, org_id: str) -> bool:
+        """Claim only if unassigned (or already owned by this operator)."""
+        now = datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
             cur = conn.execute(
-                "UPDATE alerts SET mitigation_status = ? WHERE id = ?",
-                (new_status.upper(), alert_id),
+                """UPDATE alerts SET assigned_to_id = ?, assigned_to_name = ?, claimed_at = ?,
+                   mitigation_status = CASE WHEN mitigation_status = 'NEW' THEN 'INVESTIGATING' ELSE mitigation_status END
+                   WHERE id = ? AND org_id = ? AND (assigned_to_id IS NULL OR assigned_to_id = ?)""",
+                (user_id, username, now, alert_id, org_id, user_id),
+            )
+            return cur.rowcount > 0
+
+    def assign_alert(
+        self, alert_id: str, user_id: str, username: str, org_id: str, *, allow_reassign: bool = False
+    ) -> bool:
+        """Assign an incident atomically; only admins should request reassignment."""
+        now = datetime.now(UTC).isoformat()
+        owner_clause = "" if allow_reassign else " AND (assigned_to_id IS NULL OR assigned_to_id = ?)"
+        params: list[Any] = [user_id, username, now, alert_id, org_id]
+        if not allow_reassign:
+            params.append(user_id)
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET assigned_to_id = ?, assigned_to_name = ?, claimed_at = ? "
+                "WHERE id = ? AND org_id = ?" + owner_clause,
+                params,
+            )
+            return cur.rowcount > 0
+
+    def release_alert(
+        self, alert_id: str, user_id: str, org_id: str, *, admin_override: bool = False
+    ) -> bool:
+        owner_clause = "" if admin_override else " AND assigned_to_id = ?"
+        params: list[Any] = [alert_id, org_id]
+        if not admin_override:
+            params.append(user_id)
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET assigned_to_id = NULL, assigned_to_name = NULL, claimed_at = NULL, "
+                "mitigation_status = CASE WHEN mitigation_status = 'INVESTIGATING' THEN 'NEW' ELSE mitigation_status END "
+                "WHERE id = ? AND org_id = ?" + owner_clause,
+                params,
             )
             return cur.rowcount > 0
 

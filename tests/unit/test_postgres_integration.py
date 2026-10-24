@@ -40,6 +40,22 @@ def pg_repo():
     yield repo
 
 
+@pytest.fixture()
+def pg_audit():
+    """An audit logger over an emptied table.
+
+    Existing rows may have been signed under a different NASWATCH_JWT_SECRET
+    (a different CI run, a different local secret), which would fail chain
+    verification for reasons unrelated to this code. Clearing first lets the
+    test prove the chain over rows it wrote itself.
+    """
+    aud = AuditLogger(db_url=PG_URL)
+    conn, _ = aud.backend.execute("TRUNCATE audit_log")
+    aud.backend.commit(conn)
+    aud.backend.close(conn)
+    return aud
+
+
 def test_postgres_repository_tenant_scope(pg_repo):
     for org, imsi in (("acme", "111111111111111"), ("globex", "222222222222222")):
         pg_repo.add(Device(
@@ -92,8 +108,8 @@ def test_postgres_identity_stores():
     assert not rs.is_valid(new_jti)
 
 
-def test_postgres_audit_chain():
-    aud = AuditLogger(db_url=PG_URL)
+def test_postgres_audit_chain(pg_audit):
+    aud = pg_audit
     e1 = aud.log("alice", "auth.login", resource="u1", org_id="acme")
     e2 = aud.log("bob", "device.provision", resource="imsi1", org_id="acme")
     valid, broken, total = aud.verify_chain()

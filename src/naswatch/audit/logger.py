@@ -218,9 +218,14 @@ class AuditLogger:
         }
         return self._expected_integrity(row_data, row["prev_hash"] or "", row["integrity"]) == row["integrity"]
 
-    def verify_integrity(self, entry_id: str) -> bool:
-        """Verify a single entry's integrity hash."""
-        conn, cur = self.backend.execute("SELECT * FROM audit_log WHERE id=?", (entry_id,))
+    def verify_integrity(self, entry_id: str, org_id: str | None = None) -> bool:
+        """Verify one entry signature, optionally enforcing tenant scope."""
+        query = "SELECT * FROM audit_log WHERE id=?"
+        params: tuple[str, ...] = (entry_id,)
+        if org_id:
+            query += " AND org_id=?"
+            params = (entry_id, org_id)
+        conn, cur = self.backend.execute(query, params)
         row = cur.fetchone()
         self.backend.close(conn)
         if not row:

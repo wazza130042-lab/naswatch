@@ -7,8 +7,10 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from ui.rbac import has
-from ui.store import get_user_store
+from naswatch.auth.password_policy import WeakPasswordError, evaluate
+from ui.password_strength import render_password_strength
+from ui.rbac import ROLE_DESCRIPTIONS, ROLE_LABELS, has
+from ui.store import get_user_store, log_ui_action, revoke_user_sessions
 from ui.components import (
     render_alert_item, render_kpi_cards,
     render_mitre_attack_matrix,
@@ -39,7 +41,7 @@ def render(ctx):
         <div class="page-head">
             <div>
                 <div class="page-title">User management</div>
-                <div class="page-sub">Provision operator accounts and assign admin, analyst, or viewer roles for this tenant.</div>
+                <div class="page-sub">Create named operator accounts and grant only the access required for their job.</div>
             </div>
         </div>
         """,
@@ -51,6 +53,13 @@ def render(ctx):
     else:
         from naswatch.storage.models import UserRole
 
+        with st.expander("Role access guide", expanded=False):
+            role_cols = st.columns(4, gap="small")
+            for column, role_name in zip(role_cols, ("admin", "analyst", "viewer", "auditor")):
+                with column:
+                    st.markdown(f"**{ROLE_LABELS[role_name]}**")
+                    st.caption(ROLE_DESCRIPTIONS[role_name])
+
         store = get_user_store()
         if store is None:
             st.error("Identity store is unavailable.")
@@ -61,6 +70,7 @@ def render(ctx):
             admin_count = sum(1 for u in accounts if u.role.value == "admin")
             analyst_count = sum(1 for u in accounts if u.role.value == "analyst")
             viewer_count = sum(1 for u in accounts if u.role.value == "viewer")
+            auditor_count = sum(1 for u in accounts if u.role.value == "auditor")
             active_count = sum(1 for u in accounts if u.active)
 
             st.markdown(
@@ -69,36 +79,47 @@ def render(ctx):
                 f'<div class="asset-kpi"><div>ADMIN</div><strong>{admin_count}</strong><small>full control</small></div>'
                 f'<div class="asset-kpi accent-amber"><div>ANALYST</div><strong>{analyst_count}</strong><small>respond &amp; investigate</small></div>'
                 f'<div class="asset-kpi accent-cyan"><div>VIEWER</div><strong>{viewer_count}</strong><small>read-only</small></div>'
+                f'<div class="asset-kpi"><div>AUDITOR</div><strong>{auditor_count}</strong><small>audit trail only</small></div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
             # ── Create account ────────────────────────────────────────
             with st.expander("+ Create operator account", expanded=(len(accounts) == 0)):
-                with st.form("create_user_form", clear_on_submit=False):
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        new_username = st.text_input("Username / email", placeholder="operator@naswatch.io", key="new_user_name")
-                    with cc2:
-                        new_role = st.selectbox("Role", ["viewer", "analyst", "admin"], index=0, key="new_user_role",
-                                                help="Viewer = read-only · Analyst = investigate + respond · Admin = full control")
-                    new_password = st.text_input("Initial password (min 12 characters)", type="password", key="new_user_password")
-                    create_submitted = st.form_submit_button("Create account", use_container_width=True, type="primary")
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    new_username = st.text_input("Username / email", placeholder="operator@naswatch.io", key="new_user_name")
+                with cc2:
+                    new_role = st.selectbox("Role", ["viewer", "analyst", "auditor", "admin"], index=0, key="new_user_role",
+                                            format_func=lambda value: ROLE_LABELS[value],
+                                            help="Choose the narrowest role that lets this person do their job.")
+                    st.caption(ROLE_DESCRIPTIONS[new_role])
+                new_password = st.text_input("Initial password", type="password", key="new_user_password")
+                render_password_strength(new_password, username=new_username)
+                create_submitted = st.button("Create account", use_container_width=True, type="primary", key="create_user_submit")
 
                 if create_submitted:
                     cleaned = (new_username or "").strip()
+                    strength = evaluate(new_password, username=cleaned)
                     if len(cleaned) < 3:
                         st.error("Username must be at least 3 characters.")
                     elif any(u.username.casefold() == cleaned.casefold() for u in store.list_users()):
                         st.error(f"An account named '{cleaned}' already exists.")
-                    elif len(new_password or "") < 12:
-                        st.error("Password must be at least 12 characters.")
+                    elif not strength.ok:
+                        st.error(" ".join(strength.problems))
                     else:
-                        store.create_user(username=cleaned, password=new_password, role=UserRole(new_role), org_id=org_id)
-                        for widget_key in ("new_user_name", "new_user_role", "new_user_password"):
-                            st.session_state.pop(widget_key, None)
-                        st.toast(f"Created {new_role} account: {cleaned}")
-                        st.rerun()
+                        try:
+                            store.create_user(username=cleaned, password=new_password, role=UserRole(new_role), org_id=org_id)
+                        except WeakPasswordError as exc:
+                            st.error(str(exc))
+                        else:
+                            audit_error = log_ui_action(user, "user.create", cleaned, {"username": cleaned, "role": new_role})
+                            if audit_error:
+                                st.error(f"Account created, but its audit record failed: {audit_error}")
+                            for widget_key in ("new_user_name", "new_user_role", "new_user_password"):
+                                st.session_state.pop(widget_key, None)
+                            st.toast(f"Created {new_role} account: {cleaned}")
+                            st.rerun()
 
             # ── Accounts table ────────────────────────────────────────
             st.markdown(
@@ -110,7 +131,7 @@ def render(ctx):
             else:
                 st.dataframe(pd.DataFrame([{
                     "Username": u.username,
-                    "Role": u.role.value,
+                    "Role": ROLE_LABELS[u.role.value],
                     "Tenant": u.org_id,
                     "Status": "active" if u.active else "disabled",
                     "2FA": "on" if u.totp_enabled else "off",
@@ -122,7 +143,7 @@ def render(ctx):
                 by_id = {u.id: u for u in accounts}
                 selected_id = st.selectbox(
                     "Account", list(by_id.keys()),
-                    format_func=lambda uid: f"{by_id[uid].username} · {by_id[uid].role.value} · {'active' if by_id[uid].active else 'disabled'}",
+                    format_func=lambda uid: f"{by_id[uid].username} · {ROLE_LABELS[by_id[uid].role.value]} · {'active' if by_id[uid].active else 'disabled'}",
                     key="user_mgmt_selection", label_visibility="collapsed",
                 )
                 target = by_id[selected_id]
@@ -130,17 +151,30 @@ def render(ctx):
 
                 m1, m2 = st.columns(2)
                 with m1:
-                    role_options = ["viewer", "analyst", "admin"]
+                    role_options = ["viewer", "analyst", "auditor", "admin"]
                     new_role_value = st.selectbox(
                         "Role", role_options,
                         index=role_options.index(target.role.value),
+                        format_func=lambda value: ROLE_LABELS[value],
                         key=f"user_role_{target.id}",
                     )
+                    st.caption(ROLE_DESCRIPTIONS[new_role_value])
                     if st.button("Update role", use_container_width=True, key=f"user_role_btn_{target.id}",
                                  disabled=(is_self and new_role_value != "admin")):
-                        store.update_user(target.id, role=UserRole(new_role_value))
-                        st.toast(f"{target.username} → {new_role_value}")
-                        st.rerun()
+                        try:
+                            store.update_user(target.id, role=UserRole(new_role_value))
+                        except Exception as exc:
+                            from naswatch.auth.users import LastActiveAdminError
+                            if isinstance(exc, LastActiveAdminError):
+                                st.error(str(exc))
+                            else:
+                                st.error("Could not update this role. Please try again.")
+                        else:
+                            audit_error = log_ui_action(user, "user.role.update", target.id, {"username": target.username, "from": target.role.value, "to": new_role_value})
+                            if audit_error:
+                                st.error(f"Role changed, but its audit record failed: {audit_error}")
+                            st.toast(f"{target.username} → {new_role_value}")
+                            st.rerun()
                     if is_self and new_role_value != "admin":
                         st.caption("You cannot remove your own administrator role.")
                 with m2:
@@ -148,22 +182,43 @@ def render(ctx):
                                              key=f"user_active_{target.id}", disabled=is_self)
                     if st.button("Save status", use_container_width=True, key=f"user_active_btn_{target.id}",
                                  disabled=is_self):
-                        store.update_user(target.id, active=new_status)
-                        st.toast(f"{target.username} {'enabled' if new_status else 'disabled'}")
-                        st.rerun()
+                        try:
+                            store.update_user(target.id, active=new_status)
+                        except Exception as exc:
+                            from naswatch.auth.users import LastActiveAdminError
+                            if isinstance(exc, LastActiveAdminError):
+                                st.error(str(exc))
+                            else:
+                                st.error("Could not update this account. Please try again.")
+                        else:
+                            audit_error = log_ui_action(user, "user.status.update", target.id, {"username": target.username, "active": new_status})
+                            if audit_error:
+                                st.error(f"Account status changed, but its audit record failed: {audit_error}")
+                            st.toast(f"{target.username} {'enabled' if new_status else 'disabled'}")
+                            st.rerun()
                     if is_self:
                         st.caption("You cannot deactivate your own account.")
 
                 with st.expander("Reset password"):
-                    new_pw = st.text_input("New password (min 12 characters)", type="password", key=f"user_pw_{target.id}")
+                    new_pw = st.text_input("New password", type="password", key=f"user_pw_{target.id}")
+                    render_password_strength(new_pw, username=target.username)
                     if st.button("Reset password", use_container_width=True, key=f"user_pw_btn_{target.id}"):
-                        if len(new_pw or "") < 12:
-                            st.error("Password must be at least 12 characters.")
+                        strength = evaluate(new_pw, username=target.username)
+                        if not strength.ok:
+                            st.error(" ".join(strength.problems))
                         else:
-                            store.reset_password(target.id, new_pw)
-                            st.session_state.pop(f"user_pw_{target.id}", None)
-                            st.toast(f"Password reset for {target.username}")
-                            st.rerun()
+                            try:
+                                store.reset_password(target.id, new_pw)
+                                revoke_user_sessions(target.id)
+                            except WeakPasswordError as exc:
+                                st.error(str(exc))
+                            else:
+                                audit_error = log_ui_action(user, "user.password.reset", target.id, {"username": target.username})
+                                if audit_error:
+                                    st.error(f"Password reset, but its audit record failed: {audit_error}")
+                                st.session_state.pop(f"user_pw_{target.id}", None)
+                                st.toast(f"Password reset for {target.username}")
+                                st.rerun()
 
                 with st.expander("Two-factor authentication"):
                     if target.totp_enabled:
@@ -175,12 +230,19 @@ def render(ctx):
                             "Reset 2FA", use_container_width=True,
                             key=f"user_totp_reset_{target.id}",
                         ):
-                            store.disable_totp(target.id)
-                            st.toast(f"Two-factor reset for {target.username}")
-                            st.rerun()
+                            try:
+                                store.disable_totp(target.id)
+                                revoke_user_sessions(target.id)
+                            except Exception:
+                                st.error("Could not safely reset the factor and revoke active sessions. Try again.")
+                            else:
+                                audit_error = log_ui_action(user, "user.totp.reset", target.id, {"username": target.username})
+                                if audit_error:
+                                    st.error(f"Authenticator reset, but its audit record failed: {audit_error}")
+                                st.toast(f"Two-factor reset — {target.username} must re-enrol at next sign-in")
+                                st.rerun()
                     else:
                         st.caption(
-                            "Not enabled. The operator can arm it themselves from "
-                            "Settings → Security."
+                            "Not enrolled yet. Two-factor authentication is mandatory, so this "
+                            "operator is forced to set it up the first time they sign in."
                         )
-

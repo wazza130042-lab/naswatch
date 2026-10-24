@@ -4,11 +4,11 @@ NASWatch 5G IDS — Commercial Enterprise API Server
 FastAPI application providing:
   - JWT Bearer authentication (access + refresh tokens)
   - API key authentication for M2M (machine-to-machine) access
-  - Role-Based Access Control (Admin / Analyst / Viewer)
+  - Role-Based Access Control (System administrator / SOC analyst / Viewer / Auditor)
   - Per-IP rate limiting via slowapi
   - Multi-tenant org_id scoping on all data
   - SIEM integrations: PagerDuty, Splunk HEC, Microsoft Sentinel
-  - Audit logging on all write/mitigation actions
+  - Tenant-scoped audit logging for API write/mitigation actions
   - Alert correlation engine (groups related alerts into incidents)
   - License key validation and feature gating
   - Prometheus metrics exporter
@@ -25,13 +25,14 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import Counter, Gauge, generate_latest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from naswatch.auth import totp
 from naswatch.auth.oidc import OIDCProvider
+from naswatch.auth.password_policy import WeakPasswordError, validate_password
 from naswatch.detection.engine import DetectionEngine
 from naswatch.mitigation.soar import SOAREngine
 from naswatch.storage.factory import (
@@ -197,14 +198,11 @@ _splunk: Any | None = None
 _sentinel: Any | None = None
 _license_info: Any | None = None
 
-# Warn loudly if the JWT signing secret is still the placeholder.
-_default_secret = "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY"
-if os.environ.get("NASWATCH_JWT_SECRET", "") in ("", _default_secret, "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY-IN-PRODUCTION"):
-    import logging
-
-    logging.getLogger("naswatch.api").warning(
-        "NASWATCH_JWT_SECRET is not set to a strong secret. Set a 256-bit random value in production."
-    )
+if (
+    os.environ.get("NASWATCH_ENV", "development").lower() == "production"
+    and os.environ.get("NASWATCH_AUTH_DISABLED", "false").lower() == "true"
+):
+    raise RuntimeError("NASWATCH_AUTH_DISABLED cannot be enabled in production.")
 
 
 def get_repo() -> SQLiteRepository:
@@ -295,7 +293,10 @@ def get_correlation() -> Any:
 def get_api_key_store() -> Any:
     global _api_key_store
     if _api_key_store is None and _AUTH_AVAILABLE:
-        _api_key_store = APIKeyStore(db_path=os.environ.get("NASWATCH_DB_PATH", "data/inventory.db"))
+        _api_key_store = APIKeyStore(
+            db_path=os.environ.get("NASWATCH_DB_PATH", "data/inventory.db"),
+            db_url=get_db_url(),
+        )
     return _api_key_store
 
 
@@ -344,14 +345,42 @@ def get_current_actor(
     Flexible auth dependency. Accepts:
       1. Bearer JWT token in Authorization header.
       2. Raw API key in X-API-Key header.
-    Falls back to an anonymous viewer role if auth modules are not installed.
+    Authentication fails closed if auth modules or identity storage are unavailable.
     """
     if not _AUTH_AVAILABLE:
-        return {"sub": "dev", "role": "admin", "org_id": "default"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is unavailable on this server.",
+        )
+
+    return _resolve_actor(request, credentials, allow_refresh=False)
+
+
+def get_refresh_actor(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> dict:
+    """Authenticate the refresh endpoint with a refresh token only."""
+    if not _AUTH_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is unavailable on this server.",
+        )
+    return _resolve_actor(request, credentials, allow_refresh=True)
+
+
+def _resolve_actor(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    *,
+    allow_refresh: bool,
+) -> dict:
 
     # Try X-API-Key header first
     api_key_header = request.headers.get("X-API-Key")
     if api_key_header:
+        if allow_refresh:
+            raise HTTPException(status_code=401, detail="A refresh token is required.")
         store = get_api_key_store()
         if store:
             user = store.validate_key(api_key_header)
@@ -361,7 +390,37 @@ def get_current_actor(
 
     # Try Bearer JWT
     if credentials:
-        return decode_token(credentials.credentials)
+        actor = decode_token(credentials.credentials)
+        expected_type = "refresh" if allow_refresh else "access"
+        if actor.get("type") != expected_type:
+            raise HTTPException(
+                status_code=401,
+                detail=f"A {expected_type} token is required.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        user_id = actor.get("user_id")
+        if user_id:
+            store = get_user_store()
+            if store is None:
+                raise HTTPException(status_code=503, detail="Identity storage is unavailable.")
+            user = store.get_by_id(user_id)
+            if not user or not user.active:
+                raise HTTPException(status_code=401, detail="Account inactive or revoked.")
+            if actor.get("auth_method", "password") == "password" and (
+                not user.totp_enabled or not user.totp_secret
+            ):
+                refresh_store = get_refresh_store()
+                if refresh_store is not None:
+                    refresh_store.revoke_all_for_user(user_id)
+                raise HTTPException(
+                    status_code=401,
+                    detail="Two-factor authentication must be enrolled again.",
+                    headers={"X-NASWatch-2FA": "enrollment-required"},
+                )
+            # Use current directory values so role changes and account
+            # deactivation take effect immediately, even for a still-valid JWT.
+            actor.update({"sub": user.username, "role": user.role.value, "org_id": user.org_id})
+        return actor
 
     # In development or default local test, allow access if explicitly requested
     if os.environ.get("NASWATCH_AUTH_DISABLED", "false").lower() == "true":
@@ -412,7 +471,7 @@ class LoginRequest(BaseModel):
     username: str = Field(..., description="Username (email or username)")
     password: str = Field(..., description="Account password")
     totp_code: str | None = Field(
-        None, description="6-digit authenticator code; required when 2FA is enabled"
+        None, description="6-digit authenticator code; required for all password logins"
     )
 
 
@@ -431,24 +490,60 @@ class TokenResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=128, description="Operator username/email")
-    password: str = Field(..., min_length=12, max_length=128, description="Initial password (min 12 chars)")
-    role: str = Field(..., description="admin | analyst | viewer")
+    password: str = Field(..., min_length=1, max_length=128, description="Initial password")
+    role: str = Field(..., description="admin | analyst | viewer | auditor")
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, value: str) -> str:
+        if value not in {role.value for role in UserRole}:
+            raise ValueError("Role must be admin, analyst, viewer, or auditor.")
+        return value
+
+    @model_validator(mode="after")
+    def _check_password_strength(self) -> "UserCreateRequest":
+        problems = validate_password(self.password, username=self.username)
+        if problems:
+            raise ValueError(" ".join(problems))
+        return self
 
 
 class UserUpdateRequest(BaseModel):
-    role: str | None = Field(default=None, description="New role (admin | analyst | viewer)")
+    role: str | None = Field(default=None, description="New role (admin | analyst | viewer | auditor)")
     active: bool | None = Field(default=None, description="Enable/disable the account")
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, value: str | None) -> str | None:
+        if value is not None and value not in {role.value for role in UserRole}:
+            raise ValueError("Role must be admin, analyst, viewer, or auditor.")
+        return value
 
 
 class PasswordResetRequest(BaseModel):
-    new_password: str = Field(..., min_length=12, max_length=128, description="New password (min 12 chars)")
+    new_password: str = Field(..., min_length=1, max_length=128, description="New password")
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, value: str) -> str:
+        problems = validate_password(value)
+        if problems:
+            raise ValueError(" ".join(problems))
+        return value
 
 
 class APIKeyCreateRequest(BaseModel):
     name: str = Field(..., description="Human-readable name for this API key")
-    role: str = Field("viewer", description="Role: admin, analyst, viewer")
+    role: str = Field("viewer", description="Role: admin, analyst, viewer, auditor")
     org_id: str = Field("default", description="Organization this key belongs to")
     expires_at: str | None = Field(None, description="ISO date expiry, e.g. '2027-01-01'")
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, value: str) -> str:
+        if value not in {role.value for role in UserRole}:
+            raise ValueError("Role must be admin, analyst, viewer, or auditor.")
+        return value
 
 
 class DeviceCreateRequest(BaseModel):
@@ -468,6 +563,20 @@ class MitigationRequest(BaseModel):
     action: str = Field(..., description="BLOCK | INVESTIGATING | RESOLVED | REVOKE_UDM | QUARANTINE")
     reason: str = Field("Automated Security Mitigation", description="Remediation rationale")
     notify_siem: bool = Field(True, description="Forward to configured SIEM integrations")
+    confirmed: bool = Field(False, description="Explicit operator authorization for subscriber revocation")
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, value: str) -> str:
+        allowed = {"BLOCK", "INVESTIGATING", "RESOLVED", "NEW", "REVOKE_UDM", "QUARANTINE"}
+        normalized = value.upper()
+        if normalized not in allowed:
+            raise ValueError("Action must be BLOCK, INVESTIGATING, RESOLVED, NEW, REVOKE_UDM, or QUARANTINE.")
+        return normalized
+
+
+class IncidentAssignmentRequest(BaseModel):
+    assignee_id: str = Field(..., min_length=1, description="Active analyst or administrator account ID")
 
 
 class IngestEventRequest(BaseModel):
@@ -575,20 +684,40 @@ def login(request: Request, body: LoginRequest) -> TokenResponse:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Accounts with TOTP 2FA must also present a current authenticator code.
-    if user.totp_enabled:
-        if not totp.verify(user.totp_secret, body.totp_code):
-            PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="password").inc()
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="A valid two-factor authentication code is required.",
-                headers={"WWW-Authenticate": "Bearer", "X-NASWatch-2FA": "required"},
-            )
+    # Password-only REST login would bypass the mandatory 2FA policy enforced
+    # by the console. Unenrolled users must finish enrollment in the web UI.
+    if not user.totp_enabled or not user.totp_secret:
+        PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="password").inc()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Two-factor setup is required. Enroll through the NASWatch web console before using password login.",
+            headers={"X-NASWatch-2FA": "enrollment-required"},
+        )
+
+    matched_counter = totp.matching_counter(user.totp_secret, body.totp_code)
+    try:
+        accepted_totp = (
+            matched_counter is not None
+            and user_store.consume_totp_counter(user.id, matched_counter)
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Two-factor verification is temporarily unavailable. Please try again.",
+        )
+    if not accepted_totp:
+        PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="password").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A valid, unused two-factor authentication code is required.",
+            headers={"WWW-Authenticate": "Bearer", "X-NASWatch-2FA": "required"},
+        )
 
     access = create_access_token(
-        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+        subject=user.username, role=user.role.value, org_id=user.org_id,
+        user_id=user.id, auth_method="password",
     )
-    refresh = issue_new_refresh(refresh_store, user)
+    refresh = issue_new_refresh(refresh_store, user, auth_method="password")
     PROMETHEUS_AUTH_LOGINS.labels(outcome="success", method="password").inc()
 
     audit = get_audit()
@@ -602,7 +731,7 @@ def login(request: Request, body: LoginRequest) -> TokenResponse:
 
 @app.post("/api/v1/auth/refresh", tags=["Authentication"])
 @limiter.limit("30/minute")
-def refresh_token(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
+def refresh_token(request: Request, actor: dict = Depends(get_refresh_actor)) -> dict[str, Any]:
     """
     Exchange a refresh token for a fresh access token, rotating the refresh token.
     Reuse of an already-rotated token is rejected (detects token theft).
@@ -636,13 +765,17 @@ def refresh_token(request: Request, actor: dict = Depends(get_current_actor)) ->
     if not user or not user.active:
         refresh_store.revoke_all_for_user(user_id or "")
         raise HTTPException(status_code=401, detail="Account inactive or revoked.")
-
-    new_refresh = issue_new_refresh(refresh_store, user)
+    auth_method = actor.get("auth_method", "password")
+    if auth_method == "password" and (not user.totp_enabled or not user.totp_secret):
+        refresh_store.revoke_all_for_user(user_id or "")
+        raise HTTPException(status_code=401, detail="Two-factor authentication must be enrolled again.")
+    new_refresh = issue_new_refresh(refresh_store, user, auth_method=auth_method)
     refresh_store.rotate(jti, decode_token(new_refresh)["jti"])
     PROMETHEUS_REFRESH_ROTATIONS.labels(outcome="rotated").inc()
 
     access = create_access_token(
-        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+        subject=user.username, role=user.role.value, org_id=user.org_id,
+        user_id=user.id, auth_method=auth_method,
     )
     return {
         "access_token": access,
@@ -654,11 +787,14 @@ def refresh_token(request: Request, actor: dict = Depends(get_current_actor)) ->
 
 
 @app.post("/api/v1/auth/logout", tags=["Authentication"])
-def logout(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
+async def logout(request: Request, actor: dict = Depends(get_current_actor)) -> dict[str, Any]:
     """Revoke the presented refresh token (forced sign-out of a session)."""
     if not _AUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Auth module not installed.")
-    body = request.json() or {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     refresh_token_str = body.get("refresh_token")
     if refresh_token_str:
         payload = decode_token(refresh_token_str)
@@ -725,6 +861,18 @@ def oidc_assert(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
+    if os.environ.get("NASWATCH_OIDC_MFA_REQUIRED", "false").lower() == "true":
+        amr = claims.get("amr", [])
+        methods = {str(method).lower() for method in (amr if isinstance(amr, list) else [amr])}
+        mfa_methods = {"mfa", "otp", "totp", "hwk", "webauthn", "fido", "fido2"}
+        if not methods.intersection(mfa_methods):
+            PROMETHEUS_AUTH_LOGINS.labels(outcome="failure", method="oidc").inc()
+            raise HTTPException(
+                status_code=403,
+                detail="The identity provider did not assert multi-factor authentication.",
+                headers={"X-NASWatch-2FA": "required"},
+            )
+
     store = get_user_store()
     refresh_store = get_refresh_store()
     if not store or not refresh_store:
@@ -735,9 +883,10 @@ def oidc_assert(
         raise HTTPException(status_code=422, detail=f"Could not provision OIDC user: {exc}") from exc
 
     access = create_access_token(
-        subject=user.username, role=user.role.value, org_id=user.org_id, user_id=user.id
+        subject=user.username, role=user.role.value, org_id=user.org_id,
+        user_id=user.id, auth_method="oidc",
     )
-    refresh = issue_new_refresh(refresh_store, user)
+    refresh = issue_new_refresh(refresh_store, user, auth_method="oidc")
     PROMETHEUS_AUTH_LOGINS.labels(outcome="success", method="oidc").inc()
 
     audit = get_audit()
@@ -780,12 +929,15 @@ def create_user(
         raise HTTPException(status_code=422, detail=f"Invalid role: {body.role}")
     if store.get_by_username(body.username):
         raise HTTPException(status_code=409, detail="Username already exists.")
-    user = store.create_user(
-        username=body.username,
-        password=body.password,
-        role=role,
-        org_id=actor.get("org_id", "default"),
-    )
+    try:
+        user = store.create_user(
+            username=body.username,
+            password=body.password,
+            role=role,
+            org_id=actor.get("org_id", "default"),
+        )
+    except WeakPasswordError as exc:
+        raise HTTPException(status_code=422, detail=f"Weak password: {exc}")
     audit = get_audit()
     if audit:
         audit.log(actor=actor["sub"], action="user.create", resource=user.id,
@@ -814,11 +966,17 @@ def update_user(
         raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
     if user_id == actor.get("user_id") and body.active is False:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
-    updated = store.update_user(
-        user_id=user_id,
-        role=UserRole(body.role) if body.role else None,
-        active=body.active if body.active is not None else None,
-    )
+    try:
+        updated = store.update_user(
+            user_id=user_id,
+            role=UserRole(body.role) if body.role else None,
+            active=body.active if body.active is not None else None,
+        )
+    except Exception as exc:
+        from naswatch.auth.users import LastActiveAdminError
+        if isinstance(exc, LastActiveAdminError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
     audit = get_audit()
     if audit:
         audit.log(actor=actor["sub"], action="user.update", resource=user_id,
@@ -845,7 +1003,14 @@ def reset_user_password(
         raise HTTPException(status_code=404, detail="User not found.")
     if target.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, target.org_id):
         raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
-    store.reset_password(user_id, body.new_password)
+    try:
+        store.reset_password(user_id, body.new_password)
+    except WeakPasswordError as exc:
+        raise HTTPException(status_code=422, detail=f"Weak password: {exc}")
+    refresh_store = get_refresh_store()
+    if not refresh_store:
+        raise HTTPException(status_code=503, detail="Session storage is unavailable; password was reset but sessions could not be revoked.")
+    refresh_store.revoke_all_for_user(user_id)
     if actor["sub"] == target.username:
         pass
     audit = get_audit()
@@ -874,7 +1039,13 @@ def delete_user(
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
     if target.org_id != actor.get("org_id", "default") and not _is_cross_tenant_admin(actor, target.org_id):
         raise HTTPException(status_code=403, detail="Cannot manage users of another tenant.")
-    store.delete_user(user_id)
+    try:
+        store.delete_user(user_id)
+    except Exception as exc:
+        from naswatch.auth.users import LastActiveAdminError
+        if isinstance(exc, LastActiveAdminError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
     if refresh_store:
         refresh_store.revoke_all_for_user(user_id)
     audit = get_audit()
@@ -963,7 +1134,7 @@ def list_alerts(
         "limit": limit,
         "offset": offset,
         "org_id": org_id,
-        "alerts": [a.to_dict() for a in alerts],
+        "alerts": [_alert_response_for_actor(a, actor) for a in alerts],
     }
 
 
@@ -974,7 +1145,111 @@ def get_alert(alert_id: str, actor: dict = Depends(_require("alerts:read"))) -> 
     alert = repo.get_alert_by_id(alert_id, org_id=actor.get("org_id", "default"))
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found.")
-    return alert.to_dict()
+    return _alert_response_for_actor(alert, actor)
+
+
+def _alert_response_for_actor(alert: Any, actor: dict) -> dict[str, Any]:
+    """Return full evidence only to roles explicitly granted alerts:evidence."""
+    from naswatch.auth.rbac import ROLE_PERMISSIONS
+
+    result = alert.to_dict()
+    if "alerts:evidence" not in ROLE_PERMISSIONS.get(actor.get("role", "viewer"), set()):
+        result.update({
+            "title": f"{alert.severity.value}: {alert.rule_type.value.replace('_', ' ').title()}",
+            "description": "Detailed detection evidence is restricted to SOC analysts and administrators.",
+            "imsi": None,
+            "imei": None,
+            "cell_id": None,
+            "target_slice": None,
+            "raw_event": {},
+            "assigned_to_id": None,
+            "assigned_to_name": None,
+            "claimed_at": None,
+        })
+    return result
+
+
+def _incident_actor_id(actor: dict) -> str:
+    """Stable claim identity for human users and named API keys."""
+    return str(actor.get("user_id") or actor.get("key_id") or actor.get("sub") or "")
+
+
+def _audit_incident_assignment(request: Request, actor: dict, action: str, alert_id: str, details: dict) -> None:
+    audit = get_audit()
+    if audit:
+        audit.log(
+            actor=actor.get("sub", "unknown"), action=action, resource=alert_id,
+            details=details, org_id=actor.get("org_id", "default"),
+            ip_address=request.client.host if request.client else None,
+        )
+
+
+@app.post("/api/v1/alerts/{alert_id}/claim", tags=["Alerts"])
+def claim_alert(
+    alert_id: str,
+    request: Request,
+    actor: dict = Depends(_require("alerts:mitigate")),
+) -> dict[str, Any]:
+    """Atomically claim an unassigned incident for the current analyst."""
+    repo = get_repo()
+    org_id = actor.get("org_id", "default")
+    alert = repo.get_alert_by_id(alert_id, org_id=org_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    actor_id = _incident_actor_id(actor)
+    if not actor_id:
+        raise HTTPException(status_code=401, detail="Could not identify the claiming operator.")
+    if not repo.claim_alert(alert_id, actor_id, actor.get("sub", actor_id), org_id):
+        raise HTTPException(status_code=409, detail="Incident is already claimed by another operator.")
+    _audit_incident_assignment(request, actor, "alert.claim", alert_id, {"assignee": actor.get("sub")})
+    return {"alert": repo.get_alert_by_id(alert_id, org_id=org_id).to_dict()}
+
+
+@app.post("/api/v1/alerts/{alert_id}/release", tags=["Alerts"])
+def release_alert(
+    alert_id: str,
+    request: Request,
+    actor: dict = Depends(_require("alerts:mitigate")),
+) -> dict[str, Any]:
+    """Release the current operator's claim; admins may release any claim."""
+    repo = get_repo()
+    org_id = actor.get("org_id", "default")
+    alert = repo.get_alert_by_id(alert_id, org_id=org_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    admin_override = actor.get("role") == "admin"
+    if not repo.release_alert(alert_id, _incident_actor_id(actor), org_id, admin_override=admin_override):
+        raise HTTPException(status_code=409, detail="Only the assignee or an administrator can release this incident.")
+    _audit_incident_assignment(request, actor, "alert.release", alert_id, {"previous_assignee": alert.assigned_to_name})
+    return {"alert": repo.get_alert_by_id(alert_id, org_id=org_id).to_dict()}
+
+
+@app.put("/api/v1/alerts/{alert_id}/assignment", tags=["Alerts"])
+def reassign_alert(
+    alert_id: str,
+    body: IncidentAssignmentRequest,
+    request: Request,
+    actor: dict = Depends(_require("alerts:mitigate")),
+) -> dict[str, Any]:
+    """Assign or reassign an incident to an active analyst (administrator only)."""
+    if actor.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only an administrator can reassign incidents.")
+    repo = get_repo()
+    org_id = actor.get("org_id", "default")
+    alert = repo.get_alert_by_id(alert_id, org_id=org_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    users = get_user_store()
+    target = users.get_by_id(body.assignee_id) if users else None
+    if not target or not target.active or target.org_id != alert.org_id or target.role.value not in {"admin", "analyst"}:
+        raise HTTPException(status_code=422, detail="Assignee must be an active analyst or administrator in this tenant.")
+    if not repo.assign_alert(alert_id, target.id, target.username, org_id, allow_reassign=True):
+        raise HTTPException(status_code=409, detail="Incident assignment could not be updated.")
+    _audit_incident_assignment(
+        request, actor, "alert.reassign", alert_id,
+        {"previous_assignee": alert.assigned_to_name, "assignee": target.username},
+    )
+    return {"alert": repo.get_alert_by_id(alert_id, org_id=org_id).to_dict()}
 
 
 @app.post("/api/v1/alerts/{alert_id}/mitigate", tags=["SOAR Mitigation"])
@@ -991,22 +1266,43 @@ def execute_mitigation(
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found.")
 
+    actor_id = _incident_actor_id(actor)
+    admin_override = actor.get("role") == "admin"
+    if not admin_override and alert.assigned_to_id != actor_id:
+        raise HTTPException(status_code=409, detail="Claim this incident before changing its status or running a response action.")
+
     action_upper = body.action.upper()
     soar_result: dict[str, Any] = {"action": action_upper}
 
     if action_upper in ("BLOCK", "INVESTIGATING", "RESOLVED", "NEW"):
-        repo.update_mitigation_status(alert_id, action_upper)
-        soar_result["message"] = f"Alert status updated to '{action_upper}'."
-    elif action_upper == "REVOKE_UDM" and alert.imsi:
-        res = soar.revoke_subscriber(alert.imsi, reason=body.reason)
-        repo.update_mitigation_status(alert_id, "BLOCKED")
-        soar_result["udm_revocation"] = res
+        status = "BLOCKED" if action_upper == "BLOCK" else action_upper
+        if not repo.update_mitigation_status(alert_id, status, actor_id=actor_id, org_id=alert.org_id, admin_override=admin_override):
+            raise HTTPException(status_code=409, detail="Incident status was not saved; verify ownership and retry.")
+        soar_result["message"] = f"Incident status updated to '{status}'. This does not itself block network access."
+    elif action_upper == "REVOKE_UDM":
+        if not body.confirmed:
+            raise HTTPException(status_code=400, detail="Explicit confirmation is required before subscriber revocation.")
+        if not alert.imsi:
+            raise HTTPException(status_code=422, detail="This incident has no IMSI/SUPI to revoke.")
+        res = soar.revoke_subscriber(alert.imsi, reason=body.reason, org_id=alert.org_id)
+        soar_result["subscriber_revocation"] = res
+        if res.get("success"):
+            status_saved = repo.update_mitigation_status(alert_id, "BLOCKED", actor_id=actor_id, org_id=alert.org_id, admin_override=admin_override)
+            soar_result["incident_status_saved"] = status_saved
+            if not status_saved:
+                soar_result["message"] = "Core adapter confirmed revocation, but incident status could not be saved; reconcile manually."
+        else:
+            soar_result["message"] = "Inventory/core action was not fully confirmed; incident was not marked Blocked."
     elif action_upper == "QUARANTINE" and alert.imsi:
-        res = soar.quarantine_device(alert.imsi)
-        repo.update_mitigation_status(alert_id, "INVESTIGATING")
+        res = soar.quarantine_device(alert.imsi, org_id=alert.org_id)
         soar_result["quarantine"] = res
+        if res.get("success"):
+            status_saved = repo.update_mitigation_status(alert_id, "INVESTIGATING", actor_id=actor_id, org_id=alert.org_id, admin_override=admin_override)
+            soar_result["incident_status_saved"] = status_saved
+            if not status_saved:
+                soar_result["message"] = "Inventory suspension succeeded, but incident status could not be saved; reconcile manually."
     else:
-        repo.update_mitigation_status(alert_id, action_upper)
+        raise HTTPException(status_code=422, detail="Quarantine requires an incident with an IMSI/SUPI.")
 
     # SIEM forwarding
     if body.notify_siem:
@@ -1025,7 +1321,7 @@ def execute_mitigation(
             actor=actor["sub"],
             action=f"alert.mitigate.{action_upper.lower()}",
             resource=alert_id,
-            details={"imsi": alert.imsi, "rule_type": alert.rule_type.value, "reason": body.reason},
+            details={"rule_type": alert.rule_type.value, "reason": body.reason, "result": soar_result},
             org_id=actor.get("org_id", "default"),
             ip_address=request.client.host if request.client else None,
         )
@@ -1039,7 +1335,7 @@ def execute_mitigation(
 @app.get("/api/v1/incidents", tags=["Alert Correlation"])
 def list_incidents(
     limit: int = Query(50, ge=1, le=200),
-    actor: dict = Depends(_require("alerts:read")),
+    actor: dict = Depends(_require("alerts:evidence")),
 ) -> dict[str, Any]:
     """Return correlated incident groups from the real-time correlation engine."""
     correlation = get_correlation()
@@ -1070,20 +1366,30 @@ def list_devices(
     return {
         "count": len(devices),
         "org_id": org_id,
-        "devices": [
-            {
-                "imsi": d.imsi,
-                "imei": d.imei,
-                "owner_name": d.owner_name,
-                "device_model": d.device_model,
-                "status": d.status.value,
-                "allowed_slices": [s.slice_id for s in d.allowed_slices],
-                "notes": d.notes,
-                "created_at": d.created_at.isoformat() if d.created_at else None,
-            }
-            for d in devices
-        ],
+        "devices": [_device_response_for_actor(d, actor) for d in devices],
     }
+
+
+def _device_response_for_actor(device: Device, actor: dict) -> dict[str, Any]:
+    """Return subscriber identity fields only to explicitly authorized roles."""
+    from naswatch.auth.rbac import ROLE_PERMISSIONS
+
+    result = {
+        "imsi": device.imsi,
+        "imei": device.imei,
+        "owner_name": device.owner_name,
+        "device_model": device.device_model,
+        "status": device.status.value,
+        "allowed_slices": [s.slice_id for s in device.allowed_slices],
+        "notes": device.notes,
+        "created_at": device.created_at.isoformat() if device.created_at else None,
+    }
+    if "devices:sensitive" not in ROLE_PERMISSIONS.get(actor.get("role", "viewer"), set()):
+        result.update({
+            "imsi": None, "imei": None, "owner_name": None, "device_model": None,
+            "allowed_slices": [], "notes": "",
+        })
+    return result
 
 
 @app.post("/api/v1/devices", tags=["Inventory"], status_code=201)
@@ -1237,7 +1543,7 @@ def get_audit_log(
     if not audit:
         raise HTTPException(status_code=501, detail="Audit log not available.")
     entries = audit.get_entries(
-        org_id=actor.get("org_id"),
+        org_id=None if _is_cross_tenant_admin(actor, None) else actor.get("org_id"),
         actor=actor_filter,
         action=action_filter,
         limit=limit,
@@ -1245,9 +1551,28 @@ def get_audit_log(
     return {"count": len(entries), "entries": entries}
 
 
+@app.get("/api/v1/audit/{entry_id}/verify", tags=["Audit"])
+def verify_audit_entry(
+    entry_id: str,
+    actor: dict = Depends(_require("audit:read")),
+) -> dict[str, Any]:
+    """Check one signed audit row, limited to the caller's tenant."""
+    audit = get_audit()
+    if not audit:
+        raise HTTPException(status_code=501, detail="Audit log not available.")
+    org_id = None if _is_cross_tenant_admin(actor, None) else actor.get("org_id", "default")
+    valid = audit.verify_integrity(entry_id, org_id=org_id)
+    return {"entry_id": entry_id, "valid": valid}
+
+
 @app.get("/api/v1/audit/verify", tags=["Audit"])
-def verify_audit_chain(actor: dict = Depends(_require("audit:read"))) -> dict[str, Any]:
+def verify_audit_chain(actor: dict = Depends(_require("audit:verify"))) -> dict[str, Any]:
     """Verify the tamper-evidence hash chain across the full audit log."""
+    if actor.get("role") != "admin" or actor.get("org_id") != "*":
+        raise HTTPException(
+            status_code=403,
+            detail="Whole-database chain verification is reserved for a system-wide administrator.",
+        )
     audit = get_audit()
     if not audit:
         raise HTTPException(status_code=501, detail="Audit log not available.")

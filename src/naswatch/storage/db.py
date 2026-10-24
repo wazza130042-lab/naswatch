@@ -77,8 +77,11 @@ class SqlBackend:
         self.close(conn)
 
     def commit(self, conn) -> None:
-        if self.pg or not self._memory:
-            conn.commit()
+        # Always commit: for a shared in-memory connection an uncommitted write
+        # leaves an implicit transaction open, so the next BEGIN IMMEDIATE would
+        # fail with "cannot start a transaction within a transaction". Unlike
+        # close(), committing does not drop the in-memory database.
+        conn.commit()
 
     def close(self, conn) -> None:
         if not self.pg and not self._memory:

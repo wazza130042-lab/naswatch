@@ -6,4 +6,4 @@ scrape_configs:
   - job_name: 'naswatch-ids'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['naswatch-api:8000', 'host.docker.internal:8000', '127.0.0.1:8000']
+      - targets: ['naswatch-api:8000']

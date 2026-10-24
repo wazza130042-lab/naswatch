@@ -29,14 +29,18 @@ C = {
 def render_kpi_cards(
     total_packets: int, total_alerts: int, critical_count: int,
     high_count: int, medium_count: int, device_count: int,
+    include_devices: bool = True,
 ) -> None:
     cards = [
         ("c-signal", "PACKETS INSPECTED", f"{total_packets:,}", "5GS NGAP / NAS-PDU"),
         ("c-alert", "SECURITY ALERTS", f"{total_alerts:,}", f"{critical_count + high_count} high / critical"),
         ("c-crit", "CRITICAL", str(critical_count), "Action required" if critical_count else "None"),
         ("c-high", "HIGH", str(high_count), "Investigating" if high_count else "None"),
-        ("c-low", "DEVICES", str(device_count), "Authorized subscribers"),
     ]
+    if include_devices:
+        cards.append(("c-low", "DEVICES", str(device_count), "Authorized subscribers"))
+    else:
+        cards.append(("c-low", "SUBSCRIBER DATA", "RESTRICTED", "Analyst or admin access"))
 
     html = '<div class="kpi-strip">'
     for cls, label, value, detail in cards:
@@ -54,124 +58,91 @@ def render_kpi_cards(
 #  SEVERITY CHART — SVG donut matching the redesign
 # ══════════════════════════════════════════════════════════════════════════════
 def render_severity_chart(alerts: list[Alert]) -> None:
-    if not alerts:
-        st.markdown(
-            f"""
-            <div class="section-card" style="text-align:center; padding:36px 20px;">
-            <div style="width:36px; height:36px; border-radius:9px; background:rgba(76,168,255,0.10);
-                            border:1px solid rgba(76,168,255,0.22); display:inline-flex; align-items:center;
-                            justify-content:center; margin-bottom:10px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="{C['low']}" stroke-width="1.6" width="17" height="17">
-                        <path d="M12 2 3 6v6c0 5 3.8 8.7 9 10 5.2-1.3 9-5 9-10V6l-9-4Z"/>
-                        <path d="M12 8v5m0 3h.01"/>
-                    </svg>
-                </div>
-                <div style="font-size:13px; font-weight:600; color:{C['low']};">No alert data</div>
-                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">Replay a signaling capture to begin checking for threats</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    with st.container(key="overview_severity_chart"):
+        st.markdown('<div class="chart-panel-heading"><h3>Alerts by severity</h3><p>Distribution in the selected time scope</p></div>', unsafe_allow_html=True)
+        if not alerts:
+            st.info("No alert records in this time scope.")
+            return
+
+        order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+        colors = {"CRITICAL": C["crit"], "HIGH": C["high"], "MEDIUM": C["med"], "LOW": C["low"], "INFO": C["signal"]}
+        counts = pd.Series([alert.severity.value for alert in alerts]).value_counts()
+        labels = [severity for severity in order if counts.get(severity, 0)]
+        values = [int(counts[severity]) for severity in labels]
+        fig = go.Figure(go.Pie(
+            labels=labels, values=values, hole=0.68, sort=False,
+            marker={"colors": [colors[label] for label in labels], "line": {"color": C["bg-base"], "width": 3}},
+            textinfo="label+value", textposition="outside", textfont={"size": 10},
+            hovertemplate="%{label}: %{value} alerts (%{percent})<extra></extra>",
+        ))
+        fig.add_annotation(text=f"<b>{len(alerts):,}</b><br><span style='font-size:10px'>alerts</span>", x=0.5, y=0.5, showarrow=False, font={"color": C["text-1"], "size": 19})
+        fig.update_layout(
+            height=330, showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font={"family": "IBM Plex Mono, monospace", "size": 11, "color": C["text-2"]},
+            margin={"l": 18, "r": 18, "t": 20, "b": 20},
+            hoverlabel={"bgcolor": C["bg-raised"], "bordercolor": C["border"], "font": {"color": C["text-1"]}},
         )
-        return
-
-    sev_counts = {}
-    for a in alerts:
-        sev_counts[a.severity.value] = sev_counts.get(a.severity.value, 0) + 1
-
-    total = sum(sev_counts.values())
-    colors_map = {"CRITICAL": C["crit"], "HIGH": C["high"], "MEDIUM": C["med"], "LOW": C["low"], "INFO": C["signal"]}
-
-    # Build SVG donut
-    offset = 0
-    circles = ""
-    legend_rows = ""
-    for sev in ["CRITICAL", "MEDIUM", "HIGH", "LOW", "INFO"]:
-        count = sev_counts.get(sev, 0)
-        if count == 0:
-            continue
-        pct = (count / total) * 100
-        color = colors_map.get(sev, C["text-3"])
-        circles += f'<circle cx="75" cy="75" r="58" fill="none" stroke="{color}" stroke-width="18" pathLength="100" stroke-dasharray="{pct:.1f} 100" stroke-dashoffset="-{offset:.1f}" transform="rotate(-90 75 75)"/>'
-        offset += pct
-        legend_rows += f'<div style="display:flex; align-items:center; gap:9px; font-size:13px; margin-bottom:10px;"><span style="width:8px; height:8px; border-radius:2px; background:{color}; flex-shrink:0;"></span><span style="color:{C["text-2"]};">{sev.title()}</span><span style="font-family:var(--mono); color:{C["text-1"]}; margin-left:auto; padding-left:20px;">{count}</span></div>'
-
-    st.markdown(
-        f"""
-        <div class="section-card">
-            <h3>Severity breakdown</h3>
-            <div style="display:flex; align-items:center; gap:26px;">
-                <svg width="150" height="150" viewBox="0 0 150 150">
-                    <circle cx="75" cy="75" r="58" fill="none" stroke="{C['border-soft']}" stroke-width="18"/>
-                    {circles}
-                    <text x="75" y="71" text-anchor="middle" fill="{C['text-1']}" font-family="IBM Plex Mono" font-size="22" font-weight="500">{total}</text>
-                    <text x="75" y="88" text-anchor="middle" fill="{C['text-3']}" font-family="IBM Plex Mono" font-size="10">alerts</text>
-                </svg>
-                <div>{legend_rows}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "responsive": True})
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  THREAT TIMELINE — horizontal dot tracks matching the redesign
-# ══════════════════════════════════════════════════════════════════════════════
-def render_threat_timeline(alerts: list[Alert]) -> None:
-    if not alerts:
-        st.markdown(
-            f"""
-            <div class="section-card" style="text-align:center; padding:36px 20px;">
-                <div style="width:36px; height:36px; border-radius:9px; background:rgba(76,168,255,0.08);
-                            border:1px solid rgba(76,168,255,0.18); display:inline-flex; align-items:center;
-                            justify-content:center; margin-bottom:10px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="{C['low']}" stroke-width="1.6" width="17" height="17">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                    </svg>
-                </div>
-                <div style="font-size:13px; font-weight:600; color:{C['low']};">Timeline Ready</div>
-                <div style="font-size:11.5px; color:{C['text-3']}; margin-top:3px;">Replay a PCAP or start the live sensor</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+def render_threat_timeline(alerts: list[Alert], time_range: str = "Last 24 hours") -> None:
+    with st.container(key="overview_alert_timeline"):
+        title = "Alert activity by hour" if time_range == "Last 24 hours" else "Alert activity over time"
+        st.markdown(f'<div class="chart-panel-heading"><h3>{title}</h3><p>Observed alert volume, split by severity</p></div>', unsafe_allow_html=True)
+        if not alerts:
+            st.info("No alert records in this time scope.")
+            return
+
+        frame = pd.DataFrame({
+            "timestamp": pd.to_datetime([alert.timestamp for alert in alerts], utc=True, errors="coerce"),
+            "severity": [alert.severity.value for alert in alerts],
+        }).dropna(subset=["timestamp"])
+        if frame.empty:
+            st.info("Alert timestamps are unavailable for this chart.")
+            return
+
+        now = pd.Timestamp.now(tz="UTC")
+        if time_range == "Last 24 hours":
+            frequency = "h"
+            frame["bucket"] = frame["timestamp"].dt.floor(frequency)
+            buckets = pd.date_range(end=now.floor(frequency), periods=24, freq=frequency, tz="UTC")
+            tick_format = "%H:%M"
+        elif time_range == "Last 7 days":
+            frequency = "D"
+            frame["bucket"] = frame["timestamp"].dt.floor(frequency)
+            buckets = pd.date_range(end=now.floor(frequency), periods=7, freq=frequency, tz="UTC")
+            tick_format = "%b %d"
+        else:
+            span_days = max(0, (frame["timestamp"].max() - frame["timestamp"].min()).days)
+            if span_days > 60:
+                dates = frame["timestamp"].dt.floor("D")
+                frame["bucket"] = dates - pd.to_timedelta(dates.dt.dayofweek, unit="D")
+                buckets = pd.date_range(frame["bucket"].min(), frame["bucket"].max(), freq="7D", tz="UTC")
+            else:
+                frame["bucket"] = frame["timestamp"].dt.floor("D")
+                buckets = pd.date_range(frame["bucket"].min(), frame["bucket"].max(), freq="D", tz="UTC")
+            tick_format = "%b %d"
+
+        counts = frame.groupby(["bucket", "severity"]).size().unstack(fill_value=0)
+        colors = {"CRITICAL": C["crit"], "HIGH": C["high"], "MEDIUM": C["med"], "LOW": C["low"], "INFO": C["signal"]}
+        fig = go.Figure()
+        for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
+            if severity in counts.columns:
+                values = counts.reindex(index=buckets, columns=[severity], fill_value=0)[severity]
+                fig.add_trace(go.Bar(
+                    x=buckets, y=values, name=severity.title(), marker_color=colors[severity],
+                    hovertemplate=f"%{{x|{tick_format}}}<br>{severity}: %{{y}}<extra></extra>",
+                ))
+        fig.update_layout(
+            height=330, barmode="stack", bargap=0.24, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font={"family": "IBM Plex Mono, monospace", "size": 11, "color": C["text-2"]},
+            margin={"l": 46, "r": 14, "t": 20, "b": 42},
+            legend={"orientation": "h", "y": -0.22, "x": 0, "font": {"size": 10}},
+            hoverlabel={"bgcolor": C["bg-raised"], "bordercolor": C["border"], "font": {"color": C["text-1"]}},
         )
-        return
-
-    # Group by severity
-    sev_rows = {"CRITICAL": [], "HIGH": [], "MEDIUM": [], "LOW": []}
-    times = [a.timestamp for a in alerts]
-    min_t = min(times).timestamp()
-    max_t = max(times).timestamp()
-    span = max_t - min_t if max_t > min_t else 1
-
-    for a in alerts:
-        sev = a.severity.value
-        if sev in sev_rows:
-            pct = ((a.timestamp.timestamp() - min_t) / span) * 100
-            sev_rows[sev].append(pct)
-
-    color_map = {"CRITICAL": C["crit"], "HIGH": C["high"], "MEDIUM": C["med"], "LOW": C["low"]}
-
-    rows_html = ""
-    for sev in ["CRITICAL", "HIGH", "MEDIUM"]:
-        dots = ""
-        for pct in sev_rows[sev]:
-            dots += f'<div style="width:9px; height:9px; border-radius:50%; background:{color_map[sev]}; position:absolute; top:6px; left:{pct:.1f}%;"></div>'
-        rows_html += f"""
-        <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
-            <div style="width:64px; font-size:11.5px; font-weight:600; color:{C['text-3']}; letter-spacing:0.03em;">{sev}</div>
-            <div style="flex:1; height:20px; position:relative; border-bottom:1px dashed {C['border-soft']};">{dots}</div>
-        </div>"""
-
-    st.markdown(
-        f"""
-        <div class="section-card">
-            <h3>Incident timeline</h3>
-            {rows_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        fig.update_xaxes(type="date", tickformat=tick_format, showgrid=False, linecolor=C["border-soft"])
+        fig.update_yaxes(title="Alerts", rangemode="tozero", showgrid=True, gridcolor=C["border-soft"], zeroline=False, dtick=1)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "responsive": True})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -209,8 +180,7 @@ def render_topology_graph(graph) -> None:
         st.markdown(
             '<div class="section-card" style="padding:38px; text-align:center; color:#5F83AA;'
             ' font-family:var(--mono); font-size:12px;">No radio cells or network slices defined'
-            ' yet. Upload your organization\'s network structure, or replay a signaling capture /'
-            ' start the live sensor to populate the topology.</div>',
+            ' yet. Upload your organization\'s network structure or replay a saved signaling capture.</div>',
             unsafe_allow_html=True,
         )
         return

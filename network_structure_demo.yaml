@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Northwind Telecom  —  5G SA Network Structure
+#  Upload this on:  SOC dashboard  →  Network topology  →  "⇪ Upload network structure"
+#  Then press "Save structure".
+#
+#  Cells listed here are the AUTHORIZED cells. Anything seen on the wire that is
+#  NOT in this file is drawn as a ROGUE cell by the false-base-station detector.
+# ─────────────────────────────────────────────────────────────────────────────
+organization: "Northwind Telecom — 5G SA Network"
+
+# ── 5G core (one entry per AMF) ──────────────────────────────────────────────
+amf:
+  - {name: "AMF-01", id: "0x00B4", ip: "10.10.0.11"}
+  - {name: "AMF-02", id: "0x00B5", ip: "10.10.0.12"}
+
+# ── Radio access (authorized gNBs / cells) ───────────────────────────────────
+cells:
+  - {id: "0x000000010", name: "Central-Cell-A", tac: "0x0001", gnb: "gNB-01"}
+  - {id: "0x000000011", name: "North-Cell-B",   tac: "0x0002", gnb: "gNB-02"}
+  - {id: "0x000000012", name: "South-Cell-C",   tac: "0x0003", gnb: "gNB-03"}
+
+# ── Provisioned network slices (S-NSSAI: sst + sd) ───────────────────────────
+slices:
+  - {sst: 1, sd: "000001", name: "Consumer-eMBB",     description: "Public mobile broadband"}
+  - {sst: 2, sd: "000002", name: "uRLLC-Critical",    description: "Grid / emergency control"}
+  - {sst: 3, sd: "000003", name: "mIoT-Sensors",      description: "Mass metering"}
+  - {sst: 4, sd: "010203", name: "Enterprise-Private", description: "On-prem private slice"}

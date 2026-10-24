@@ -41,7 +41,9 @@ def test_soar_engine_revocation_and_report():
 
     # 2. Revoke
     r_res = soar.revoke_subscriber("999700000000001", reason="SIM Cloned")
-    assert r_res["success"] is True
+    assert r_res["success"] is False  # inventory changed, but no core adapter confirmed a network block
+    assert r_res["inventory_revoked"] is True
+    assert r_res["core_revocation"]["state"] == "not_configured"
     assert repo.get_by_imsi("999700000000001").status == DeviceStatus.REVOKED
 
     # 3. Report generation
@@ -57,7 +59,7 @@ def test_soar_engine_revocation_and_report():
     assert "IDENTITY_SPOOFING" in report
 
 
-def test_fastapi_rest_endpoints():
+def test_fastapi_rest_endpoints(enrolled_admin_login):
     """Test FastAPI /health, /metrics, /api/v1/auth/login, /api/v1/devices, /api/v1/ingest/event."""
     client = TestClient(app)
 
@@ -78,7 +80,7 @@ def test_fastapi_rest_endpoints():
     # Login to get JWT Bearer token
     r_login = client.post(
         "/api/v1/auth/login",
-        json={"username": "admin@naswatch.io", "password": "naswatch-admin-password"},
+        json=enrolled_admin_login,
     )
     assert r_login.status_code == 200
     token = r_login.json()["access_token"]

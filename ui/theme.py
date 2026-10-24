@@ -112,6 +112,45 @@ details[data-testid="stExpander"] summary { color: var(--text-1) !important; fon
 /* ── Forms ── */
 .stForm { background: var(--bg-panel) !important; border: 1px solid var(--border-soft) !important; border-radius: 4px !important; }
 
+/* ── Authenticator enrollment ── */
+div.st-key-login-enrollment, div.st-key-security-enrollment {
+  background: rgba(5, 18, 38, .94) !important;
+  border: 1px solid #1D4F83 !important;
+  border-radius: 10px !important;
+  padding: 18px 20px !important;
+  color: #D6E7FA !important;
+  overflow: visible !important;
+}
+div.st-key-login-enrollment h3, div.st-key-security-enrollment h3 {
+  color: #F2F7FF !important; font-size: 19px !important; line-height: 1.3 !important;
+  margin: 0 0 12px !important;
+}
+div.st-key-login-enrollment p, div.st-key-security-enrollment p {
+  color: #C2D6EC !important; font-size: 13px !important; line-height: 1.65 !important;
+}
+div.st-key-login-enrollment [data-testid="stImage"],
+div.st-key-security-enrollment [data-testid="stImage"] {
+  width: fit-content; max-width: 100%; padding: 10px; margin: 12px 0;
+  background: #FFFFFF; border: 1px solid #7DA9D4; border-radius: 8px;
+}
+div.st-key-login-enrollment [data-testid="stImage"] img,
+div.st-key-security-enrollment [data-testid="stImage"] img { max-width: 100%; height: auto; }
+div.st-key-login-enrollment pre, div.st-key-security-enrollment pre {
+  white-space: pre-wrap !important; overflow-wrap: anywhere !important;
+  color: #E7F2FF !important; background: #020B17 !important;
+  border: 1px solid #24517D !important; border-radius: 6px !important;
+}
+div.st-key-login-enrollment label, div.st-key-security-enrollment label {
+  color: #D6E7FA !important; font-size: 12px !important; line-height: 1.5 !important;
+}
+div.st-key-login-enrollment .stTextInput input,
+div.st-key-security-enrollment .stTextInput input {
+  min-height: 46px !important; font-size: 16px !important; letter-spacing: .12em !important;
+}
+@media (max-width: 600px) {
+  div.st-key-login-enrollment, div.st-key-security-enrollment { padding: 14px !important; }
+}
+
 /* ── Divider ── */
 hr { border-color: var(--border-soft) !important; }
 
@@ -674,13 +713,36 @@ section[data-testid="stSidebar"] .st-key-nav_users button[kind="primary"]::befor
 .inc-kpi.open b { color:#3B9EFF; }
 .inc-kpi.crit { border-top-color:#FF5C7A; } .inc-kpi.crit b { color:#FF5C7A; }
 .inc-kpi.med b { color:#3B9EFF; }
+.inc-kpi.high { border-top-color:#F5B942; } .inc-kpi.high b { color:#F5B942; }
 .inc-kpi.new { border-top-color:#22D3EE; } .inc-kpi.new b { color:#22D3EE; }
+.inc-detail-metrics { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.st-key-overview_severity_chart, .st-key-overview_alert_timeline {
+  min-width:0; padding:14px 16px 6px; border:1px solid #14407A; border-radius:10px;
+  background:rgba(6,18,40,.92); box-shadow:0 0 26px rgba(34,120,255,.08);
+}
+.chart-panel-heading { margin:0 0 2px; }
+.chart-panel-heading h3 { margin:0 0 4px; color:#DCEBFA; font:600 12px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
+.chart-panel-heading p { margin:0; color:#6F93BF; font:10px var(--mono); }
 
 .st-key-inc_queue_panel { border:1px solid #14407A; border-radius:10px; background:rgba(6,18,40,.92); padding:14px 16px; max-height:680px; overflow-y:auto; box-shadow:0 0 26px rgba(34,120,255,.10); }
 .st-key-inc_detail_panel { border:1px solid #14407A; border-radius:10px; background:rgba(6,18,40,.92); padding:16px 18px; box-shadow:0 0 26px rgba(34,120,255,.10); }
 .st-key-inc_queue_panel [data-testid="stVerticalBlock"] { gap:2px !important; }
 .st-key-inc_queue_panel [data-testid="stHorizontalBlock"] { gap:6px !important; }
 .st-key-inc_detail_panel [data-testid="stVerticalBlock"] { gap:6px !important; }
+.st-key-inc_detail_panel [data-testid="stTable"] {
+  width:100% !important; max-width:100% !important; overflow-x:auto !important;
+  border:1px solid #174A83 !important; border-radius:8px !important;
+  background:#040F20 !important;
+}
+.st-key-inc_detail_panel [data-testid="stTable"] table { width:100% !important; }
+.st-key-inc_detail_panel [data-testid="stTable"] th {
+  background:#0A1B35 !important; color:#BBD5F2 !important;
+  font:600 12px var(--mono) !important; white-space:normal !important;
+}
+.st-key-inc_detail_panel [data-testid="stTable"] td {
+  color:#E1EDFA !important; font:12px/1.55 var(--mono) !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
 .st-key-inc_queue_panel .stButton > button {
   border:0 !important; background:transparent !important; min-height:0 !important; height:auto !important;
   padding:2px 0 !important; justify-content:flex-start !important; text-align:left !important;
@@ -710,6 +772,69 @@ section[data-testid="stSidebar"] .st-key-nav_users button[kind="primary"]::befor
 .st-key-inc_triage [data-testid="stHorizontalBlock"] { gap:8px !important; }
 .st-key-inc_triage .stButton > button { min-height:30px !important; padding:3px 10px !important; border-radius:99px !important; font:11px var(--mono) !important; }
 .st-key-inc_triage .stButton > button[kind="primary"] { background:#0B2248 !important; color:#FFFFFF !important; border-color:#3B9EFF !important; }
+@media(max-width:900px) { .inc-detail-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:760px) { .inc-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+/* ── Settings popover (command-bar gear) ────────────────────────────── */
+[data-testid="stPopoverBody"] {
+  background: linear-gradient(155deg, #071528 0%, #050F1F 100%) !important;
+  border: 1px solid #1A4370 !important; border-radius: 11px !important;
+  padding: 12px !important; width: 302px !important;
+  box-shadow: 0 20px 44px rgba(0,0,0,.55), inset 0 0 0 1px rgba(23,74,131,.35) !important;
+}
+[data-testid="stPopoverBody"] [data-testid="stVerticalBlock"] { gap: 2px !important; }
+[data-testid="stPopoverBody"] .stElementContainer { margin: 0 !important; }
+
+.settings-head { padding: 3px 3px 9px; }
+.settings-eyebrow {
+  margin: 0 0 8px; color: #527BA5; font: 700 9px var(--mono);
+  letter-spacing: .18em; text-transform: uppercase;
+}
+.settings-id {
+  display: flex; align-items: center; gap: 10px; padding: 10px 11px;
+  border: 1px solid #174A83; border-radius: 9px;
+  background: linear-gradient(145deg, rgba(18,32,52,.95), rgba(8,17,31,.95));
+}
+.settings-avatar {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; border-radius: 8px; font: 700 13px var(--mono);
+}
+.settings-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.settings-name {
+  color: #EAF3FF; font: 600 12px var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-sub { color: #6387AE; font: 9.5px var(--mono); letter-spacing: .05em; }
+.settings-role {
+  flex: none; margin-left: auto; padding: 3px 8px; border-radius: 99px;
+  font: 700 8.5px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+}
+.settings-sep { height: 1px; background: #12375E; margin: 7px 3px; }
+.settings-sep-gap { margin-top: 9px; }
+
+[data-testid="stPopoverBody"] .stButton > button {
+  justify-content: flex-start !important; text-align: left !important; gap: 10px !important;
+  width: 100% !important; min-height: 38px !important; height: auto !important;
+  padding: 8px 11px !important; border: 1px solid transparent !important;
+  border-radius: 8px !important; background: transparent !important; box-shadow: none !important;
+  color: #BBD4EE !important; font: 12px var(--mono) !important;
+}
+[data-testid="stPopoverBody"] .stButton > button:hover {
+  background: #0A2346 !important; border-color: #174A83 !important;
+  color: #F2F8FF !important; transform: none !important;
+}
+[data-testid="stPopoverBody"] .stButton > button [data-testid="stIconMaterial"] {
+  color: #5FA8FF !important; font-size: 18px !important;
+}
+[data-testid="stPopoverBody"] .st-key-settings_signout button { color: #FF9AA8 !important; }
+[data-testid="stPopoverBody"] .st-key-settings_signout button [data-testid="stIconMaterial"] { color: #FF6E85 !important; }
+[data-testid="stPopoverBody"] .st-key-settings_signout button:hover {
+  background: rgba(255,70,107,.12) !important; border-color: rgba(255,70,107,.42) !important;
+  color: #FFC2CB !important;
+}
+/* gear reads as “pressed” while the menu is open */
+[data-testid="stPopoverButton"][aria-expanded="true"] {
+  background: #0A2346 !important; border-color: #2A99FF !important; color: #F2F8FF !important;
+}
 </style>
 """

@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import time
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from naswatch.api.server import app
 from naswatch.audit.logger import AuditLogger
+from naswatch.auth import totp
 from naswatch.auth.users import RefreshTokenStore, UserStore
 from naswatch.storage.factory import create_repository, create_user_store
 from naswatch.storage.models import (
@@ -50,6 +53,12 @@ def test_user_store_crud_and_authentication():
 
     assert store.count_users() >= 1
     assert [u.username for u in store.list_users(org_id="acme")] == ["analyst@acme.io"]
+
+    # Deleting the sole active admin would orphan the org, so the store guards
+    # against it. Add a second admin to make the delete legitimate.
+    store.create_user(
+        "ops@acme.io", "sup3r-Strong-Pass!", UserRole.ADMIN, org_id="acme"
+    )
     assert store.delete_user(user.id) is True
     assert store.get_by_id(user.id) is None
 
@@ -215,11 +224,9 @@ def test_audit_legacy_rows_backfilled_into_chain(tmp_path):
 # ---------------------------------------------------------------------------
 # API surface: new enterprise endpoints
 # ---------------------------------------------------------------------------
-def test_api_enterprise_endpoints():
+def test_api_enterprise_endpoints(enrolled_admin_login):
     client = TestClient(app)
-    r_login = client.post("/api/v1/auth/login", json={
-        "username": "admin@naswatch.io", "password": "naswatch-admin-password",
-    })
+    r_login = client.post("/api/v1/auth/login", json=enrolled_admin_login)
     assert r_login.status_code == 200
     tokens = r_login.json()
     headers = {"Authorization": f"Bearer {tokens['access_token']}",
@@ -249,10 +256,64 @@ def test_api_enterprise_endpoints():
                           headers={"Authorization": f"Bearer {refresh}"})
     assert r_reuse.status_code == 401, "replayed refresh token must be rejected"
 
-    # Audit chain integrity across the live store
+    # Audit chain integrity across the live store. Whole-database chain
+    # verification is deliberately reserved for a system-wide administrator
+    # (org_id "*"); an ordinary tenant admin must be refused.
     r_verify = client.get("/api/v1/audit/verify", headers=headers)
-    assert r_verify.status_code == 200
-    assert r_verify.json()["valid"] is True
+    assert r_verify.status_code == 403
+
+    from naswatch.api import server as _server
+
+    store = _server.get_user_store()
+    superadmin = store.create_user(
+        f"root-{uuid4().hex[:8]}@naswatch.io",
+        "sup3r-Strong-Pass!",
+        UserRole.ADMIN,
+        org_id="*",
+    )
+    # _resolve_actor enforces an enrolled second factor for password-auth users.
+    sa_secret = totp.generate_secret()
+    sa_now = time.time()
+    store.complete_totp_enrollment(
+        superadmin.id, sa_secret, totp.hotp(sa_secret, totp.counter_for(sa_now) - 1), when=sa_now
+    )
+    from naswatch.auth.jwt_handler import create_access_token
+
+    super_token = create_access_token(
+        superadmin.username, superadmin.role.value, superadmin.org_id, user_id=superadmin.id
+    )
+    super_headers = {
+        "Authorization": f"Bearer {super_token}",
+        "Content-Type": "application/json",
+    }
+    r_verify_super = client.get("/api/v1/audit/verify", headers=super_headers)
+    assert r_verify_super.status_code == 200
+    assert r_verify_super.json()["valid"] is True
+
+
+def test_api_password_login_requires_enrollment_and_rejects_replay(enrolled_admin_login):
+    client = TestClient(app)
+    first = client.post("/api/v1/auth/login", json=enrolled_admin_login)
+    assert first.status_code == 200
+
+    # The same TOTP time-step cannot mint another session token.
+    replay = client.post("/api/v1/auth/login", json=enrolled_admin_login)
+    assert replay.status_code == 401
+
+    # Password-only REST login is not an alternate route around mandatory 2FA.
+    from naswatch.api.server import get_user_store
+
+    store = get_user_store()
+    un_enrolled = store.create_user(
+        f"unenrolled-{uuid4().hex[:10]}@naswatch.io",
+        "A-longer-Strong-Pass!",
+        UserRole.ANALYST,
+    )
+    password_only = client.post("/api/v1/auth/login", json={
+        "username": un_enrolled.username, "password": "A-longer-Strong-Pass!",
+    })
+    assert password_only.status_code == 403
+    assert password_only.headers.get("X-NASWatch-2FA") == "enrollment-required"
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +358,7 @@ def test_oidc_enforced_blocks_password_login(monkeypatch):
 # ---------------------------------------------------------------------------
 # Observability: auth metrics are exported and increment
 # ---------------------------------------------------------------------------
-def test_auth_metrics_exported():
+def test_auth_metrics_exported(enrolled_admin_login):
     from prometheus_client import REGISTRY
 
     client = TestClient(app)
@@ -316,9 +377,7 @@ def test_auth_metrics_exported():
     before_ok = REGISTRY.get_sample_value(
         "naswatch_auth_logins_total", {"outcome": "success", "method": "password"}
     ) or 0.0
-    client.post("/api/v1/auth/login", json={
-        "username": "admin@naswatch.io", "password": "naswatch-admin-password",
-    })
+    client.post("/api/v1/auth/login", json=enrolled_admin_login)
     after_ok = REGISTRY.get_sample_value(
         "naswatch_auth_logins_total", {"outcome": "success", "method": "password"}
     ) or 0.0

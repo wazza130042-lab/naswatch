@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.rbac import has
+from ui.store import log_ui_action
 from ui.components import (
     render_alert_item, render_kpi_cards,
     render_mitre_attack_matrix,
@@ -32,6 +33,11 @@ def render(ctx):
     high_count = ctx["high_count"]
     med_count = ctx["med_count"]
     soar = ctx["soar"]
+
+    def audit_export(filename: str) -> None:
+        audit_error = log_ui_action(user, "report.export", filename, {"time_range": time_range})
+        if audit_error:
+            st.session_state["_audit_warning"] = f"Report downloaded, but its audit record failed: {audit_error}"
 
     st.markdown(
         """
@@ -95,7 +101,8 @@ def render(ctx):
                 unsafe_allow_html=True,
             )
             st.download_button("Generate export", data=data, file_name=filename,
-                               mime=mime, use_container_width=True, key=f"report_{title}")
+                               mime=mime, use_container_width=True, key=f"report_{title}",
+                               on_click=audit_export, args=(filename,))
 
     recent_col, scope_col = st.columns([1.55, 1], gap="small")
     with recent_col:

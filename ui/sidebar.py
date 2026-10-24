@@ -5,11 +5,10 @@ top-corner settings menu owned by ``ui/app.py``.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
 from ui.rbac import has
+from ui.routing import ACCOUNT_PAGES, ADMIN_PAGES, AUDIT_PAGES, DETAIL_PAGES, WORKSPACE_PAGES, goto
 
 
 def render_sidebar(repo):
@@ -37,101 +36,35 @@ def render_sidebar(repo):
         )
 
         # SOC workspace navigation
-        st.markdown('<div class="nav-section-label">SOC WORKSPACE</div>', unsafe_allow_html=True)
-        pages = ["Overview", "Event search", "Incidents", "Network topology", "Asset inventory", "Reports"]
-        admin_pages = ["User management"] if has("users") else []
+        section_label = "AUDIT & COMPLIANCE" if has("audit") and not has("view") else "SOC WORKSPACE"
+        st.markdown(f'<div class="nav-section-label">{section_label}</div>', unsafe_allow_html=True)
+        if has("evidence"):
+            pages = list(WORKSPACE_PAGES)
+        elif has("view"):
+            pages = ["Overview", "Incidents"]
+        else:
+            pages = []
+        admin_pages = list(ADMIN_PAGES) if has("users") else []
+        audit_pages = list(AUDIT_PAGES) if has("audit") else []
         # Account pages are reachable from the top-corner settings menu, not the
         # sidebar, so they are valid destinations that must not be reset.
-        account_pages = ["Security"]
-        if st.session_state.current_page not in pages + admin_pages + account_pages:
-            st.session_state.current_page = "Overview"
+        account_pages = list(ACCOUNT_PAGES)
+        allowed_detail_pages = list(DETAIL_PAGES) if has("view") else []
+        if st.session_state.current_page not in pages + allowed_detail_pages + admin_pages + audit_pages + account_pages:
+            st.session_state.current_page = "Overview" if pages else ("Audit log" if audit_pages else "Security")
         for nav_index, nav_page in enumerate(pages, start=1):
             if st.button(
                 nav_page,
                 use_container_width=True,
-                type="primary" if nav_page == st.session_state.current_page else "secondary",
+                type="primary" if (
+                    nav_page == st.session_state.current_page
+                    or (nav_page == "Incidents" and st.session_state.current_page == "Incident detail")
+                ) else "secondary",
                 key=f"soc_nav_{nav_index}",
             ):
-                st.session_state.current_page = nav_page
+                goto(nav_page)
                 st.rerun()
         page = st.session_state.current_page
 
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
-        st.markdown('<div class="nav-section-label" style="margin-top:10px;">INGESTION</div>', unsafe_allow_html=True)
-        # Ingestion status
-        st.markdown(
-            """
-            <div class="sidebar-block">
-                <div class="live-tag"><span class="pulse-dot"></span>N2 CAPTURE CONFIGURED</div>
-                <div class="live-port">SCTP :38412</div>
-                <div class="live-sub">gNB ↔ AMF signaling interface</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Replay section — only roles with the replay permission see it.
-        if has("replay"):
-            st.markdown(
-                '<div class="sidebar-heading">▾ Replay traffic</div>',
-                unsafe_allow_html=True,
-            )
-            pcap_path = st.text_input("PCAP", value="data/pcaps/5g_signaling_demo.pcap", label_visibility="collapsed")
-            if st.button("▶  Replay PCAP", use_container_width=True, type="primary", key="btn_replay"):
-                if not Path(pcap_path).exists():
-                    st.error(f"Not found: {pcap_path}")
-                    st.stop()
-                from naswatch.detection.engine import DetectionEngine
-                from naswatch.ingestion.pcap_replay import PCAPReplayer
-                engine = DetectionEngine(device_repo=repo)
-                replayer = PCAPReplayer(pcap_path=pcap_path)
-                new_alerts = 0
-                event_log = []
-                with st.spinner("Processing..."):
-                    for event in replayer.stream_events():
-                        st.session_state.inspected_count += 1
-                        event_log.append({
-                            "Time": event.timestamp.strftime("%H:%M:%S"),
-                            "Packet": event.packet_num,
-                            "Procedure": event.procedure_name or "5GS",
-                            "IMSI": event.imsi or "—",
-                            "IMEI": event.imei or "—",
-                            "Slice": event.requested_slice_id or "—",
-                            "Cell": event.cell_id or "—",
-                            "Cipher": event.cipher_algo or "NEA2",
-                            "Integrity": event.integrity_algo or "NIA2",
-                        })
-                        alerts = engine.process_event(event)
-                        for a in alerts:
-                            repo.record_alert(a)
-                            new_alerts += 1
-                st.session_state.last_events = event_log
-                st.toast(f"Done — {len(event_log)} packets, {new_alerts} alerts")
-                st.rerun()
-
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        st.markdown('<div class="nav-section-label" style="margin-top:4px;">INCIDENT FILTERS</div>', unsafe_allow_html=True)
-        # Global incident filters
-        selected_severity = st.selectbox("Severity", ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"], key="sev_filter")
-        selected_rule = st.selectbox("Rule", [
-            "ALL", "ROGUE_DEVICE", "IDENTITY_SPOOFING", "SLICE_INTRUSION",
-            "CIPHER_DOWNGRADE", "FALSE_BASE_STATION", "SIGNALING_FLOOD",
-        ], key="rule_filter")
-
-        st.markdown("---")
-
-        # Footer
-        st.markdown(
-            """
-            <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border-soft);
-                        display:flex; align-items:center; gap:9px; color:var(--text-3); font-size:11.5px;">
-                <span class="pulse-dot"></span> Console ready
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        selected_severity, selected_rule = "ALL", "ALL"
     return st.session_state.current_page, selected_severity, selected_rule

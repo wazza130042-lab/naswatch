@@ -52,6 +52,42 @@ class DetectionEngine:
         # Stateful windowed rate tracker: imsi -> deque of timestamps
         self._rate_tracker: dict[str, deque[float]] = defaultdict(deque)
 
+    @staticmethod
+    def _attach_event_context(alerts: list[Alert], event: ParsedSignalingEvent) -> None:
+        """Persist the decoded packet context that caused each detection.
+
+        Rule-specific evidence is retained alongside common transport, NGAP,
+        subscriber, and security fields so an analyst can investigate an alert
+        after the in-memory PCAP replay session has ended.
+        """
+        context = {
+            "event_timestamp": event.timestamp.isoformat(),
+            "protocol": event.protocol,
+            "packet_num": event.packet_num,
+            "procedure_name": event.procedure_name,
+            "procedure_code": event.procedure_code,
+            "source_ip": event.source_ip,
+            "dest_ip": event.dest_ip,
+            "ran_ue_ngap_id": event.ran_ue_ngap_id,
+            "amf_ue_ngap_id": event.amf_ue_ngap_id,
+            "imsi": event.imsi,
+            "imei": event.imei,
+            "guti": event.guti,
+            "cell_id": event.cell_id,
+            "tac": event.tac,
+            "requested_sst": event.requested_sst,
+            "requested_sd": event.requested_sd,
+            "cipher_algo": event.cipher_algo,
+            "integrity_algo": event.integrity_algo,
+            "metadata": event.metadata or {},
+        }
+        context = {key: value for key, value in context.items() if value not in (None, "", {})}
+        for alert in alerts:
+            # Keep rule-specific evidence at the top level while adding shared
+            # packet context. Existing values win if a rule deliberately records
+            # a more specific value for the same field.
+            alert.raw_event = {**context, **(alert.raw_event or {})}
+
     def _check_signaling_flood(self, event: ParsedSignalingEvent) -> Alert | None:
         """Track initial UE signaling to detect registration storms."""
         if not event.imsi or not self.enable_flood_rule:
@@ -107,6 +143,7 @@ class DetectionEngine:
                 bs_alert = detect_false_base_station(event, self.authorized_cells)
                 if bs_alert:
                     alerts.append(bs_alert)
+            self._attach_event_context(alerts, event)
             return alerts
 
         # Fetch device from inventory repository
@@ -177,4 +214,5 @@ class DetectionEngine:
                 extra={"extra_fields": {"rule": "SIGNALING_FLOOD", "imsi": event.imsi}},
             )
 
+        self._attach_event_context(alerts, event)
         return alerts

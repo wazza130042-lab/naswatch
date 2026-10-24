@@ -14,8 +14,8 @@ class DeviceRepository(ABC):
     """Abstract interface for querying and modifying authorized 5G device inventory."""
 
     @abstractmethod
-    def get_by_imsi(self, imsi: str) -> Device | None:
-        """Fetch an authorized device record by its IMSI/SUPI."""
+    def get_by_imsi(self, imsi: str, org_id: str | None = None) -> Device | None:
+        """Fetch a device by IMSI/SUPI, optionally constrained to its tenant."""
 
     @abstractmethod
     def get_by_imei(self, imei: str) -> Device | None:
@@ -60,8 +60,25 @@ class AlertRepository(ABC):
         """Fetch a specific alert by its UUID."""
 
     @abstractmethod
-    def update_mitigation_status(self, alert_id: str, new_status: str) -> bool:
-        """Update incident mitigation status (e.g. BLOCKED, INVESTIGATING, RESOLVED)."""
+    def update_mitigation_status(
+        self, alert_id: str, new_status: str, *, actor_id: str | None = None,
+        org_id: str | None = None, admin_override: bool = False,
+    ) -> bool:
+        """Update status; actor-scoped calls require the current incident assignee."""
+
+    @abstractmethod
+    def claim_alert(self, alert_id: str, user_id: str, username: str, org_id: str) -> bool:
+        """Atomically claim an unassigned alert for one operator."""
+
+    @abstractmethod
+    def assign_alert(
+        self, alert_id: str, user_id: str, username: str, org_id: str, *, allow_reassign: bool = False
+    ) -> bool:
+        """Assign or, when authorized by the caller, reassign an alert."""
+
+    @abstractmethod
+    def release_alert(self, alert_id: str, user_id: str, org_id: str, *, admin_override: bool = False) -> bool:
+        """Release an operator's claim, optionally as an administrator."""
 
     @abstractmethod
     def count(self) -> int:

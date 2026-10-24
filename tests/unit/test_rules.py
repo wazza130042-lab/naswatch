@@ -204,7 +204,9 @@ def test_signaling_flood_detection(memory_repo):
         flood_window_seconds=2.0,
     )
 
-    # Send 6 rapid events for same IMSI
+    # Send 6 rapid registration attempts for the same IMSI. The flood rule
+    # deliberately only counts registration procedures, so procedure_name must
+    # be present to model a real registration storm.
     alerts = []
     for _ in range(6):
         event = ParsedSignalingEvent(
@@ -212,6 +214,7 @@ def test_signaling_flood_detection(memory_repo):
             imei="860123456789012",
             requested_sst=1,
             requested_sd="000001",
+            procedure_name="RegistrationRequest",
         )
         alerts.extend(engine.process_event(event))
 

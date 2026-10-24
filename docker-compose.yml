@@ -7,12 +7,22 @@ services:
     container_name: naswatch-api
     command: uvicorn naswatch.api.server:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       PYTHONPATH: /app/src
       HOME: /tmp
+      NASWATCH_ENV: development
+      NASWATCH_JWT_SECRET: ${NASWATCH_JWT_SECRET:-}
+      NASWATCH_DB_PATH: /app/data/inventory.db
+      NASWATCH_DB_URL: postgresql://naswatch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/naswatch
+      NASWATCH_CORS_ORIGINS: ${NASWATCH_CORS_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
+      NASWATCH_CORE_REVOCATION_URL: ${NASWATCH_CORE_REVOCATION_URL:-}
+      NASWATCH_CORE_REVOCATION_TOKEN: ${NASWATCH_CORE_REVOCATION_TOKEN:-}
     volumes:
       - naswatch-data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -28,10 +38,17 @@ services:
     container_name: naswatch-ui
     command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     environment:
       PYTHONPATH: /app/src
       HOME: /tmp
+      NASWATCH_ENV: development
+      NASWATCH_JWT_SECRET: ${NASWATCH_JWT_SECRET:-}
+      NASWATCH_DB_PATH: /app/data/inventory.db
+      NASWATCH_DB_URL: postgresql://naswatch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/naswatch
+      NASWATCH_API_URL: http://naswatch-api:8000
+      NASWATCH_CORE_REVOCATION_URL: ${NASWATCH_CORE_REVOCATION_URL:-}
+      NASWATCH_CORE_REVOCATION_TOKEN: ${NASWATCH_CORE_REVOCATION_TOKEN:-}
     volumes:
       - naswatch-data:/app/data
     depends_on:
@@ -45,16 +62,37 @@ services:
       retries: 3
 
   # 3. Prometheus Monitoring Engine
+  db:
+    image: postgres:16-alpine
+    container_name: naswatch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: naswatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: naswatch
+    volumes:
+      - naswatch-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U naswatch -d naswatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 4. Prometheus Monitoring Engine
   prometheus:
     image: prom/prometheus:latest
     container_name: naswatch-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - naswatch-prometheus-data:/prometheus
     restart: unless-stopped
 
 volumes:
   naswatch-data:
+  naswatch-prometheus-data:
+  naswatch-postgres-data:

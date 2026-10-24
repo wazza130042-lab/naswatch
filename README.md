@@ -116,7 +116,11 @@ flowchart TD
 ### 1. 🔐 Authentication, Authorization & RBAC
 - **First-Run Setup (no default credentials):** a fresh install ships **no** accounts and no
   built-in password. The first time the dashboard is opened it shows a **first-run setup** screen
-  that creates the initial administrator (email + password, min 12 chars). Unattended installs seed
+  that creates the initial administrator. A shared password-strength policy is enforced on every
+  account-creation surface (API, dashboard and `scripts/create_admin.py`): at least 12 characters,
+  not a well-known/breached password, at least two of lowercase/uppercase/digits/symbols, not the
+  account name itself, and at most 72 bytes (bcrypt's hashing limit). The dashboard shows a live
+  strength meter and the REST API returns a `422` with the exact reasons. Unattended installs seed
   the account from `NASWATCH_ADMIN_EMAIL` + `NASWATCH_ADMIN_PASSWORD`, or with
   `python scripts/create_admin.py`; there is no unauthenticated account-creation API.
 - **JWT Bearer Auth:** HS256 signed access and refresh tokens with configurable expiration.
@@ -124,20 +128,23 @@ flowchart TD
 - **SSO / OIDC (Enterprise):** External identity providers (Keycloak, Entra ID, Okta, Auth0) via
   OpenID discovery + JWKS signature validation. Operator accounts are auto-provisioned from token
   claims, and `NASWATCH_OIDC_ENFORCED=true` disables password login org-wide.
-- **Two-Factor Authentication (TOTP):** Optional, self-service RFC 6238 time-based one-time passwords
-  that work with any authenticator app (Google Authenticator, Authy, 1Password, FreeOTP…). Enrol from
-  **Settings ⚙ → Security** (scan the QR or enter the setup key), then sign in with password **+** a
-  6-digit code. Codes are validated with a ±30 s drift window to tolerate clock skew; accounts that
-  are not enrolled still sign in with a password only. Admins can reset an operator's 2FA from
-  **Settings ⚙ → User management**; disabling your own 2FA requires the account password. The API's
+- **Two-Factor Authentication (TOTP) — mandatory:** RFC 6238 time-based one-time passwords that work
+  with any authenticator app (Google Authenticator, Authy, 1Password, FreeOTP…). Every account must
+  enrol: after a correct password, an operator without a second factor is taken to a forced enrolment
+  screen (scan the QR or enter the setup key) and **cannot reach any console page until they confirm a
+  code** — this applies to the first-run administrator too. After enrolment, sign-in is password **+**
+  a 6-digit code. Codes are validated with a ±30 s drift window to tolerate clock skew. Admins can
+  reset an operator's 2FA from **Settings ⚙ → User management** (the operator re-enrols at next
+  sign-in); replacing your own authenticator requires the account password. The API's
   `POST /api/v1/auth/login` enforces the same second factor via the `totp_code` field. The TOTP
   algorithm is stdlib-only (`src/naswatch/auth/totp.py`); QR rendering uses the pure-Python `segno`
   package and degrades to a manual setup key when it is unavailable.
 - **M2M API Keys:** SHA-256 hashed API keys (`nw_...`) for automated probes and external AMF agents.
 - **Role-Based Access Control (RBAC):**
-  - `admin`: Full system control, device management, API keys, user administration, and audit inspection.
-  - `analyst`: Alert triage, SOAR execution, incident investigation, and forensic report export.
-  - `viewer`: Read-only access to alerts and inventory matrices.
+  - `admin` (**System administrator**): Manage operator accounts, API keys, subscriber inventory, and response actions; read audit records.
+  - `analyst` (**SOC analyst**): Investigate incidents with packet/subscriber evidence, replay captures, and respond to incidents they own.
+  - `viewer` (**Read-only viewer**): See overview metrics and sanitized incident summaries; no subscriber IDs, packet evidence, exports, or SOC changes.
+  - `auditor` (**Audit reviewer**): Read the tenant audit trail and verify individual record signatures; no SOC, subscriber, user-management, or response access.
 - **Tenant Isolation:** Every identity operation is scoped by `org_id`; system administrators (org `*`)
   may manage all tenants, regular admins only their own.
 - **Per-IP Rate Limiting:** Configurable request throttling powered by `slowapi`.
@@ -147,10 +154,13 @@ flowchart TD
 - Automatically executes **Escalation Chains** (e.g., `SIGNALING_FLOOD` + `ROGUE_DEVICE` co-occurrence escalates incident severity to **CRITICAL**).
 
 ### 3. 🛡️ SOAR Remediation Engine
-- **Revoke at 5GC:** Instantly revokes subscriber credentials across UDM/AMF.
-- **Quarantine IMSI:** Suspends device authentication state for forensic investigation.
-- **Firewall Rule Generation:** Produces `iptables` drop commands for rogue Cell IDs.
-- **Forensic Evidence Bundle:** Generates standalone JSON evidence reports for audit & legal retention.
+- **Inventory revocation:** Marks a subscriber `REVOKED` in NASWatch's tenant-scoped inventory. This alone does not block access in a 5G core.
+- **Core revocation:** Optional operator-owned adapter integration. It is called only after explicit analyst confirmation, and NASWatch marks the incident `BLOCKED` only when the adapter returns a verified success response. No core adapter is enabled by default.
+- **Quarantine:** Marks the subscriber `SUSPENDED` in NASWatch inventory; this is not a core-side block.
+- **Firewall Rule Generation:** Produces an `iptables` drop command for operator review; it does not install the rule.
+- **Forensic report:** Downloads a Markdown incident report. It is not an immutable evidence bundle.
+
+Configure `NASWATCH_CORE_REVOCATION_URL` and `NASWATCH_CORE_REVOCATION_TOKEN` in `.env` to connect an operator-managed HTTPS adapter. The adapter must accept `POST` JSON containing `imsi`, `reason`, and `source`, authenticate the bearer token, and return `{"success":true}` only after it confirms the subscriber is barred in the core. Keep the URL and token in a protected secret store. Open5GS provides subscriber database management commands, but a NASWatch inventory update does not invoke them automatically; subscriber data changes should follow the deployed core's supported procedure and be verified in that core.
 
 ### 4. 📡 SIEM & Alert Forwarding
 - **PagerDuty:** Events API v2 escalation with automatic deduping and severity mapping.

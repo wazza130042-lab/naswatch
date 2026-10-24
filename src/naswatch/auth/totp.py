@@ -96,21 +96,42 @@ def verify(
     modest clock skew between the appliance and the operator's phone does not
     lock them out.
     """
-    if not secret or not code:
-        return False
-    candidate = "".join(ch for ch in str(code) if ch.isdigit())
-    if len(candidate) != digits:
-        return False
+    return matching_counter(secret, code, when=when, window=window, step=step, digits=digits) is not None
+
+
+def matching_counter(
+    secret: str | None,
+    code: str | None,
+    when: float | None = None,
+    window: int = 1,
+    step: int = STEP_SECONDS,
+    digits: int = DIGITS,
+) -> int | None:
+    """Return the matching time-step counter, or ``None`` for an invalid code.
+
+    Only an exact ASCII digit string is accepted. Returning the matched counter
+    lets the identity store atomically reject reuse of an already-consumed OTP.
+    """
+    if not secret or not isinstance(code, str) or step <= 0 or digits <= 0:
+        return None
+    candidate = code
+    if len(candidate) != digits or not candidate.isascii() or not candidate.isdecimal():
+        return None
     moment = time.time() if when is None else when
     base = int(moment // step)
+    matched: int | None = None
     for offset in range(-abs(int(window)), abs(int(window)) + 1):
+        counter = base + offset
+        if counter < 0:
+            continue
         try:
-            expected = hotp(secret, base + offset, digits)
+            expected = hotp(secret, counter, digits)
         except ValueError:
-            return False
-        if hmac.compare_digest(expected, candidate):
-            return True
-    return False
+            return None
+        equal = hmac.compare_digest(expected, candidate)
+        if equal and (matched is None or abs(offset) < abs(matched - base)):
+            matched = counter
+    return matched
 
 
 def seconds_remaining(when: float | None = None, step: int = STEP_SECONDS) -> int:

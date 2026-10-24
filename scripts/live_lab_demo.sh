@@ -23,6 +23,15 @@ REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 
 OPEN5GS_INSTALL="${OPEN5GS_INSTALL:-$REAL_HOME/open5gs/install}"
 UERANSIM_DIR="${UERANSIM_DIR:-/tmp/UERANSIM-3.2.6}"
+# UERANSIM binaries may land in build/ or cmake-build-release/ depending on how
+# cmake was invoked; auto-detect so the demo does not depend on the exact dir.
+if [ -x "$UERANSIM_DIR/build/nr-gnb" ]; then
+  UERANSIM_BIN="$UERANSIM_DIR/build"
+elif [ -x "$UERANSIM_DIR/cmake-build-release/nr-gnb" ]; then
+  UERANSIM_BIN="$UERANSIM_DIR/cmake-build-release"
+else
+  UERANSIM_BIN="$UERANSIM_DIR/build"
+fi
 NASWATCH_DIR="${NASWATCH_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CONF_DIR="$NASWATCH_DIR/config/open5gs"
 CAPTURE_FILE="${CAPTURE_FILE:-$NASWATCH_DIR/data/pcaps/lab5g_live.pcap}"
@@ -134,37 +143,65 @@ for nf in amfd smfd udmd udrd ausfd pcfd; do
   esac
   sleep 1
 done
+
+# UPF: needs CAP_NET_ADMIN to create the ogstun device. Start it directly when
+# we have privileges (root), otherwise let the caller run it in a privileged
+# container — sessions need a PFCP-associated UPF or PDU setups are rejected.
+if [ "$(id -u)" = "0" ]; then
+  "$BIN/open5gs-upfd" > /tmp/naswatch-upfd.log 2>&1 &
+  sleep 1
+elif command -v docker >/dev/null 2>&1 && \
+     [ "$(docker inspect -f '{{.State.Running}}' naswatch-upf 2>/dev/null)" = "true" ]; then
+  ok "using existing privileged UPF container (naswatch-upf)"
+else
+  echo "WARNING: UPF not started (no root, no naswatch-upf container)." >&2
+  echo "         PDU sessions will be rejected with 'No associated UPF'." >&2
+fi
+
 sleep 4
 found=$(pgrep -cf "install/bin/open5gs-[namsup]" 2>/dev/null || echo 0)
-ok "8 NF processes expected, $found running"
+ok "up to 9 NF processes expected, $found running"
 
 # ---------------------------------------------------------------------------
 log "2/6  Launching simulated gNB (UERANSIM / gNB)"
-"$UERANSIM_DIR/build/nr-gnb" -c "$CONF_DIR/gnb.yaml" > /tmp/naswatch-gnb.log 2>&1 &
+"$UERANSIM_BIN/nr-gnb" -c "$CONF_DIR/gnb.yaml" > /tmp/naswatch-gnb.log 2>&1 &
 GNB_PID=$!
 sleep 5
 grep -q "NG Setup procedure is successful" /tmp/naswatch-gnb.log && ok "gNB <-> AMF NG Setup OK" || { tail -5 /tmp/naswatch-gnb.log; exit 1; }
 
 # ---------------------------------------------------------------------------
 if [ "$CAPTURE" = "on" ]; then
-  log "3/6  Capturing REAL N2/N1 signaling (root required)..."
-  tcpdump -i lo -w "$CAPTURE_FILE" 'sctp or port 38412' 2>/tmp/naswatch-tcpdump.err &
-  TCPDUMP_PID=$!
-  sleep 2
-  if kill -0 "$TCPDUMP_PID" 2>/dev/null; then
-    ok "tcpdump capturing to $CAPTURE_FILE"
+  log "3/6  Capturing REAL N2/N1 signaling..."
+  # Prefer dumpcap: it ships with cap_net_admin,cap_net_raw and works without
+  # root for users in the wireshark group. Fall back to tcpdump for root runs.
+  CAPTURE_TOOL=""
+  if command -v dumpcap >/dev/null 2>&1 && dumpcap -i lo -w /dev/null -c 0 2>/dev/null; then
+    CAPTURE_TOOL="dumpcap"
+  elif [ "$(id -u)" = "0" ] || tcpdump -i lo -c 0 -w /dev/null 2>/dev/null; then
+    CAPTURE_TOOL="tcpdump"
+  fi
+  if [ -n "$CAPTURE_TOOL" ]; then
+    "$CAPTURE_TOOL" -i lo -w "$CAPTURE_FILE" 'sctp or port 38412' 2>/tmp/naswatch-tcpdump.err &
+    TCPDUMP_PID=$!
+    sleep 2
+    if kill -0 "$TCPDUMP_PID" 2>/dev/null; then
+      ok "$CAPTURE_TOOL capturing to $CAPTURE_FILE"
+    else
+      cat /tmp/naswatch-tcpdump.err
+      exit 1
+    fi
   else
-    cat /tmp/naswatch-tcpdump.err
+    echo "ERROR: no capture tool available (need dumpcap or root tcpdump)." >&2
     exit 1
   fi
 else
-  log "3/6  CAPTURE OFF — no root capture, showing core/replay detection only"
+  log "3/6  CAPTURE OFF — no packet capture, showing core/replay detection only"
 fi
 
 # ---------------------------------------------------------------------------
 run_ue() {
   local cfg="$1" tag="$2"
-  "$UERANSIM_DIR/build/nr-ue" -c "$CONF_DIR/$cfg" > "/tmp/naswatch-ue-$tag.log" 2>&1 &
+  "$UERANSIM_BIN/nr-ue" -c "$CONF_DIR/$cfg" > "/tmp/naswatch-ue-$tag.log" 2>&1 &
   local pid=$!
   sleep 12
   kill "$pid" 2>/dev/null || true

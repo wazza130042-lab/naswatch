@@ -39,6 +39,7 @@ class UserRole(str, Enum):
     ADMIN = "admin"
     ANALYST = "analyst"
     VIEWER = "viewer"
+    AUDITOR = "auditor"
 
 
 @dataclass
@@ -142,6 +143,9 @@ class Alert:
     mitigation_status: str = "NEW"  # NEW, INVESTIGATING, BLOCKED, RESOLVED
     raw_event: dict[str, Any] | None = None
     org_id: str = "default"  # Multi-tenant ownership scope
+    assigned_to_id: str | None = None
+    assigned_to_name: str | None = None
+    claimed_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -158,6 +162,9 @@ class Alert:
             "mitigation_status": self.mitigation_status,
             "raw_event": self.raw_event or {},
             "org_id": self.org_id,
+            "assigned_to_id": self.assigned_to_id,
+            "assigned_to_name": self.assigned_to_name,
+            "claimed_at": self.claimed_at.isoformat() if self.claimed_at else None,
         }
 
 

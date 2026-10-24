@@ -26,7 +26,31 @@ try:
 except ImportError:
     _HAS_PASSLIB = False
 
-SECRET_KEY: str = os.environ.get("NASWATCH_JWT_SECRET", "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY-IN-PRODUCTION")
+_CONFIGURED_SECRET = os.environ.get("NASWATCH_JWT_SECRET", "").strip()
+_PLACEHOLDER_SECRETS = {
+    "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY",
+    "CHANGE-THIS-TO-A-RANDOM-256-BIT-KEY-IN-PRODUCTION",
+    "replace-with-at-least-64-random-hex-characters",
+}
+_PRODUCTION = os.environ.get("NASWATCH_ENV", "development").lower() == "production"
+if len(_CONFIGURED_SECRET.encode("utf-8")) >= 32 and _CONFIGURED_SECRET not in _PLACEHOLDER_SECRETS:
+    SECRET_KEY: str = _CONFIGURED_SECRET
+elif _PRODUCTION:
+    raise RuntimeError(
+        "Production requires NASWATCH_JWT_SECRET with at least 32 non-placeholder bytes. "
+        "Generate one with `openssl rand -hex 32`."
+    )
+else:
+    # Never sign local tokens with a publicly known fallback. When no stable key
+    # is configured, use a process-random key so an accidental dev deployment
+    # cannot be forged from a published default. Sessions then expire on restart.
+    import logging
+
+    SECRET_KEY = secrets.token_urlsafe(48)
+    logging.getLogger("naswatch.auth").warning(
+        "NASWATCH_JWT_SECRET is missing or weak; using a temporary process key. "
+        "Set a stable random secret to preserve sessions across restarts."
+    )
 ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("NASWATCH_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.environ.get("NASWATCH_REFRESH_TOKEN_EXPIRE_DAYS", "30"))
@@ -64,6 +88,7 @@ def _jwt_claims(
     token_type: str,
     user_id: str | None,
     jti: str | None,
+    auth_method: str = "password",
 ) -> dict:
     claims = {
         "sub": subject,
@@ -71,6 +96,7 @@ def _jwt_claims(
         "org_id": org_id,
         "type": token_type,
         "iat": datetime.now(UTC),
+        "auth_method": auth_method,
     }
     if user_id:
         claims["user_id"] = user_id
@@ -99,10 +125,11 @@ def create_access_token(
     org_id: str,
     expires_delta: Optional[timedelta] = None,
     user_id: str | None = None,
+    auth_method: str = "password",
 ) -> str:
     """Create a short-lived JWT access token."""
     expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    payload = _jwt_claims(subject, role, org_id, "access", user_id, None)
+    payload = _jwt_claims(subject, role, org_id, "access", user_id, None, auth_method)
     payload["exp"] = expire
     if _HAS_PYJWT:
         return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -112,11 +139,17 @@ def create_access_token(
     return _encode(payload)
 
 
-def create_refresh_token(subject: str, role: str, org_id: str, user_id: str | None = None) -> str:
+def create_refresh_token(
+    subject: str,
+    role: str,
+    org_id: str,
+    user_id: str | None = None,
+    auth_method: str = "password",
+) -> str:
     """Create a long-lived JWT refresh token carrying a unique jti for rotation/revocation."""
     expire = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     jti = secrets.token_urlsafe(32)
-    payload = _jwt_claims(subject, role, org_id, "refresh", user_id, jti)
+    payload = _jwt_claims(subject, role, org_id, "refresh", user_id, jti, auth_method)
     payload["exp"] = expire
     if _HAS_PYJWT:
         return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)

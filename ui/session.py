@@ -58,6 +58,10 @@ def sign_out() -> None:
     # Drop the previous operator's password so it is never resubmitted.
     st.session_state.pop("login_password", None)
     st.session_state.pop("user", None)
+    # The Streamlit session survives sign-out. Remove per-operator packet and
+    # incident state so the next person at this browser cannot inherit it.
+    for key in ("last_events", "inspected_count", "incident_selection", "global_search", "event_detail_selection"):
+        st.session_state.pop(key, None)
 
 
 def _restore_session() -> None:

@@ -49,6 +49,8 @@ class OIDCProvider:
         self.client_id = client_id or os.environ.get("NASWATCH_OIDC_CLIENT_ID") or ""
         self.client_secret = client_secret or os.environ.get("NASWATCH_OIDC_CLIENT_SECRET") or ""
         self.admin_roles = {r.strip() for r in (admin_roles or os.environ.get("NASWATCH_OIDC_ADMIN_ROLES", "")).split(",") if r.strip()}
+        self.analyst_roles = {r.strip() for r in os.environ.get("NASWATCH_OIDC_ANALYST_ROLES", "").split(",") if r.strip()}
+        self.auditor_roles = {r.strip() for r in os.environ.get("NASWATCH_OIDC_AUDITOR_ROLES", "").split(",") if r.strip()}
         self.role_claim = role_claim or os.environ.get("NASWATCH_OIDC_ROLE_CLAIM", "groups")
         self.org_claim = org_claim or os.environ.get("NASWATCH_OIDC_TENANT_CLAIM", "org_id")
         self.enabled = bool(self.issuer and self.client_id)
@@ -136,9 +138,18 @@ class OIDCProvider:
         else:
             members = []
         lowered = {m.lower() for m in members}
-        if lowered & {r.lower() for r in self.admin_roles}:
-            return "admin"
-        return os.environ.get("NASWATCH_OIDC_DEFAULT_ROLE", "viewer")
+        role_groups = (
+            ("admin", self.admin_roles),
+            ("analyst", self.analyst_roles),
+            ("auditor", self.auditor_roles),
+        )
+        for role, groups in role_groups:
+            if lowered & {group.lower() for group in groups}:
+                return role
+        default_role = os.environ.get("NASWATCH_OIDC_DEFAULT_ROLE", "viewer")
+        from naswatch.storage.models import UserRole
+
+        return default_role if default_role in {role.value for role in UserRole} else "viewer"
 
     def claims_to_user(self, store, claims: dict[str, Any]):
         """Upsert a NASWatch user derived from validated OIDC claims."""

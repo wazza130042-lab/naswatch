@@ -26,7 +26,7 @@ def test_migration_adds_totp_columns(tmp_path):
     _legacy_user_db(str(db_file))
 
     store = UserStore(db_path=str(db_file))
-    assert {"totp_secret", "totp_enabled", "totp_enrolled_at"} <= store._existing_columns()
+    assert {"totp_secret", "totp_enabled", "totp_enrolled_at", "last_totp_counter"} <= store._existing_columns()
 
     legacy = store.get_by_id("legacy-1")
     assert legacy is not None
@@ -72,6 +72,16 @@ def test_current_code_roundtrip():
     assert not totp.verify(secret, "", when=when)
     assert not totp.verify("", code, when=when)
     assert not totp.verify(secret, "12345", when=when)
+    assert not totp.verify(secret, "12x456", when=when)
+    assert not totp.verify(secret, "１２３４５６", when=when)
+
+
+def test_matching_counter_returns_the_accepted_time_step():
+    secret = totp.generate_secret()
+    when = 1_700_000_000
+    code = totp.current_code(secret, when=when - 30)
+    assert totp.matching_counter(secret, code, when=when) == totp.counter_for(when - 30)
+    assert totp.matching_counter(secret, "12x456", when=when) is None
 
 
 def test_verify_tolerates_one_step_of_drift():
@@ -146,6 +156,20 @@ def test_user_store_totp_lifecycle():
     assert cleared.totp_enabled is False
     assert cleared.totp_secret is None
     assert cleared.totp_enrolled_at is None
+
+
+def test_enrollment_and_login_counters_are_single_use():
+    store = UserStore(db_path=":memory:")
+    user = store.create_user("single-use@naswatch.io", "another-Strong-Pass!", UserRole.ANALYST)
+    secret = totp.generate_secret()
+    code = totp.current_code(secret)
+    assert store.complete_totp_enrollment(user.id, secret, code) is True
+
+    counter = totp.matching_counter(secret, code)
+    assert counter is not None
+    assert store.consume_totp_counter(user.id, counter) is False
+    assert store.consume_totp_counter(user.id, counter + 1) is True
+    assert store.consume_totp_counter(user.id, counter + 1) is False
 
 
 def test_to_dict_hides_totp_secret():

@@ -174,15 +174,12 @@ def test_siem_integration_clients():
     assert "skipped" in res_se
 
 
-def test_commercial_api_endpoints():
+def test_commercial_api_endpoints(enrolled_admin_login):
     """Test API key creation via API, correlation endpoint, and audit trail endpoint."""
     client = TestClient(app)
 
     # Login as admin
-    r_login = client.post(
-        "/api/v1/auth/login",
-        json={"username": "admin@naswatch.io", "password": "naswatch-admin-password"},
-    )
+    r_login = client.post("/api/v1/auth/login", json=enrolled_admin_login)
     token = r_login.json()["access_token"]
     admin_headers = {"Authorization": f"Bearer {token}"}
 

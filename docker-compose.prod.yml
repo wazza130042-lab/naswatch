@@ -6,8 +6,6 @@
 # Usage: docker-compose -f docker-compose.prod.yml up -d --build
 #        docker-compose -f docker-compose.prod.yml logs -f caddy
 
-version: "3.9"
-
 services:
   caddy:
     image: caddy:2-alpine
@@ -18,7 +16,7 @@ services:
       - "443:443"
     environment:
       - NASWATCH_FQDN=${NASWATCH_FQDN:-localhost}
-      - NASWATCH_TLS_MODE=${NASWATCH_TLS_MODE:-internal}
+      - NASWATCH_TLS_MODE=${NASWATCH_TLS_MODE-tls internal}
     volumes:
       - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -43,10 +41,12 @@ services:
       - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:?Set NASWATCH_JWT_SECRET in .env}
       - NASWATCH_LICENSE_KEY=${NASWATCH_LICENSE_KEY:-}
       - NASWATCH_ADMIN_EMAIL=${NASWATCH_ADMIN_EMAIL:-admin@naswatch.io}
-      - NASWATCH_ADMIN_PASSWORD=${NASWATCH_ADMIN_PASSWORD:?Set NASWATCH_ADMIN_PASSWORD in .env}
+      - NASWATCH_ADMIN_PASSWORD=${NASWATCH_ADMIN_PASSWORD:-}
+      - NASWATCH_ENV=production
       - NASWATCH_FLOOD_THRESHOLD=${NASWATCH_FLOOD_THRESHOLD:-10}
       - NASWATCH_FLOOD_WINDOW_SECONDS=${NASWATCH_FLOOD_WINDOW_SECONDS:-60}
       - NASWATCH_CORS_ORIGINS=${NASWATCH_CORS_ORIGINS:-https://${NASWATCH_FQDN:-localhost}}
+      - NASWATCH_OIDC_MFA_REQUIRED=${NASWATCH_OIDC_MFA_REQUIRED:-true}
       - PAGERDUTY_INTEGRATION_KEY=${PAGERDUTY_INTEGRATION_KEY:-}
       - SPLUNK_HEC_URL=${SPLUNK_HEC_URL:-}
       - SPLUNK_HEC_TOKEN=${SPLUNK_HEC_TOKEN:-}
@@ -91,6 +91,9 @@ services:
     environment:
       - NASWATCH_API_URL=https://${NASWATCH_FQDN:-localhost}/api
       - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:?Set NASWATCH_JWT_SECRET in .env}
+      - NASWATCH_ENV=production
+      - NASWATCH_DB_URL=${NASWATCH_DB_URL:-postgresql://naswatch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/naswatch}
+      - NASWATCH_DB_PATH=/app/data/inventory.db
     depends_on:
       - naswatch-api
     command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
@@ -102,7 +105,7 @@ services:
     container_name: naswatch-prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -119,7 +122,7 @@ services:
     container_name: naswatch-grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}

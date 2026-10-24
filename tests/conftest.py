@@ -4,17 +4,31 @@ Pytest configuration and shared test fixtures for NASWatch.
 
 from __future__ import annotations
 
+import os
+import tempfile
+import time
 from datetime import UTC, datetime
 
-import pytest
+# Pin environment before any naswatch module is imported. ``jwt_handler`` reads
+# NASWATCH_JWT_SECRET once at import time and derives SECRET_KEY from it; the
+# audit hash chain is HMAC-keyed with that same key. Without a stable secret the
+# suite would sign each run with a random process key, so the audit chain in a
+# persisted DB could never verify — and the tests would write to the developer's
+# real data/ store. pytest imports conftest before the test modules, so setting
+# these here takes effect before those modules import naswatch.
+os.environ.setdefault("NASWATCH_JWT_SECRET", "test-secret-" + "0" * 32)
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="naswatch-tests-")
+os.environ.setdefault("NASWATCH_DB_PATH", os.path.join(_TEST_DB_DIR, "inventory.db"))
 
-from naswatch.storage.models import (
+import pytest  # noqa: E402
+
+from naswatch.storage.models import (  # noqa: E402
     Device,
     DeviceStatus,
     ParsedSignalingEvent,
     SliceAssignment,
 )
-from naswatch.storage.sqlite_repo import SQLiteRepository
+from naswatch.storage.sqlite_repo import SQLiteRepository  # noqa: E402
 
 
 @pytest.fixture
@@ -100,3 +114,30 @@ def _provision_bootstrap_admin(monkeypatch):
     """
     monkeypatch.setenv("NASWATCH_ADMIN_EMAIL", "admin@naswatch.io")
     monkeypatch.setenv("NASWATCH_ADMIN_PASSWORD", "naswatch-admin-password")
+
+
+@pytest.fixture
+def enrolled_admin_login():
+    """Return credentials for a test admin with a fresh TOTP factor armed."""
+    from naswatch.api import server
+    from naswatch.auth import totp
+
+    store = server.get_user_store()
+    admin = store.get_by_username("admin@naswatch.io")
+    if admin is None:
+        from naswatch.storage.models import UserRole
+
+        admin = store.create_user(
+            "admin@naswatch.io", "naswatch-admin-password", UserRole.ADMIN
+        )
+    secret = totp.generate_secret()
+    now = time.time()
+    current_counter = totp.counter_for(now)
+    enrollment_code = totp.hotp(secret, current_counter - 1)
+    login_code = totp.hotp(secret, current_counter)
+    assert store.complete_totp_enrollment(admin.id, secret, enrollment_code, when=now)
+    return {
+        "username": admin.username,
+        "password": "naswatch-admin-password",
+        "totp_code": login_code,
+    }
