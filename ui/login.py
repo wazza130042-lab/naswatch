@@ -418,7 +418,12 @@ def login_page():
           div.st-key-auth-terminal > [data-testid="stVerticalBlock"] { position:static!important;height:100%!important;min-height:0;display:flex;flex-direction:column;gap:0!important; }
           div.st-key-auth-terminal > [data-testid="stElementContainer"]:first-child { position:absolute!important;top:0!important;left:0!important;right:0!important;height:43px!important;z-index:4!important; }
           div.st-key-auth-terminal > [data-testid="stElementContainer"]:last-child { position:absolute!important;bottom:0!important;left:0!important;right:0!important;height:30px!important;z-index:4!important; }
-          div.st-key-auth-terminal [data-testid="stLayoutWrapper"] { flex:1 1 auto!important;min-height:0!important;height:auto!important;overflow:hidden!important; }
+          div.st-key-auth-terminal > [data-testid="stLayoutWrapper"] { flex:1 1 auto!important;min-height:0!important;height:auto!important;overflow:hidden!important; }
+          /* Layout wrappers nested inside the auth column (e.g. the 2FA enrolment card) must keep
+             their natural height and let the column scroll. The rule above also matched them and
+             squeezed the card into a fixed, clipped box, which cut the QR code off and hid the
+             manual setup key and provisioning link entirely. */
+          div.st-key-auth-terminal [data-testid="stColumn"] [data-testid="stLayoutWrapper"] { flex:0 0 auto!important;height:auto!important;overflow:visible!important; }
           .terminal-chrome { min-height:43px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:12px 16px;background:#08172C;border-bottom:1px solid #14407A;color:#6F93BF;font:12px 'JetBrains Mono',monospace; }
           .chrome-dot { width:11px;height:11px;border-radius:50%;flex:none;background:#3B9EFF; }
           .chrome-dot:nth-child(2) { background:#1D5FB8; }.chrome-dot:nth-child(3) { background:#123A6B; }

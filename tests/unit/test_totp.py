@@ -79,12 +79,30 @@ def test_current_code_roundtrip():
 def test_matching_counter_returns_the_accepted_time_step():
     secret = totp.generate_secret()
     when = 1_700_000_000
-    code = totp.current_code(secret, when=when - 30)
-    assert totp.matching_counter(secret, code, when=when) == totp.counter_for(when - 30)
+    same_step = totp.current_code(secret, when=when)
+    previous_step = totp.current_code(secret, when=when - 30)
+    assert totp.matching_counter(secret, same_step, when=when) == totp.counter_for(when)
+    assert totp.matching_counter(secret, previous_step, when=when, window=1) == totp.counter_for(when - 30)
     assert totp.matching_counter(secret, "12x456", when=when) is None
 
 
-def test_verify_tolerates_one_step_of_drift():
+def test_expired_code_is_rejected_by_default():
+    """A code dies when the authenticator rolls over, without opting into drift."""
+    secret = totp.generate_secret()
+    step = 30
+    shown_at = 1_700_000_020  # step N, 10s in
+    code = totp.current_code(secret, when=shown_at)
+    rollover = shown_at + (step - shown_at % step)  # first second of step N+1
+    assert rollover == 1_700_000_040 and shown_at % step == 10
+
+    assert totp.verify(secret, code, when=shown_at)
+    assert totp.verify(secret, code, when=rollover - 1)
+    assert not totp.verify(secret, code, when=rollover)
+    assert not totp.verify(secret, code, when=rollover + 10)  # the reported case
+    assert not totp.verify(secret, code, when=rollover + 29)
+
+
+def test_verify_tolerates_one_step_of_drift_when_opted_in():
     secret = totp.generate_secret()
     when = 1_700_000_000  # well inside a 30s step, so +/-30s shifts one step
 

@@ -13,12 +13,7 @@ ROLE_LABELS = {
     "auditor": "Audit reviewer",
 }
 
-ROLE_DESCRIPTIONS = {
-    "admin": "Manage NASWatch accounts, API keys, subscriber inventory, system response, and audit records. This role has the broadest access; use it only for named system administrators.",
-    "analyst": "Investigate incidents with full packet and subscriber evidence, replay captures, and take response actions on incidents they own. Cannot manage accounts, keys, or subscriber inventory.",
-    "viewer": "Monitor overview metrics and incident summaries. Subscriber identifiers, packet evidence, exports, and SOC operations are restricted. Each operator can still manage their own login security.",
-    "auditor": "Review this tenant’s audit trail and verify individual record signatures. Cannot view SOC incidents, subscriber data, manage users, or change system data.",
-}
+
 
 # Existing view names map to canonical API permission strings. This keeps UI
 # visibility and server authorization tied to one policy source.

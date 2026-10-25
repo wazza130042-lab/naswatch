@@ -131,13 +131,18 @@ def enrolled_admin_login():
             "admin@naswatch.io", "naswatch-admin-password", UserRole.ADMIN
         )
     secret = totp.generate_secret()
+    # Only the current step is accepted, so make sure the request that follows this
+    # fixture still lands in the step the code was minted for.
     now = time.time()
-    current_counter = totp.counter_for(now)
-    enrollment_code = totp.hotp(secret, current_counter - 1)
-    login_code = totp.hotp(secret, current_counter)
-    assert store.complete_totp_enrollment(admin.id, secret, enrollment_code, when=now)
+    if now % totp.STEP_SECONDS > totp.STEP_SECONDS - 2:
+        time.sleep(totp.STEP_SECONDS - (now % totp.STEP_SECONDS) + 0.2)
+        now = time.time()
+    # Arm the factor directly (no code is consumed) so the returned code can be used
+    # straight away: an enrolment code would already be spent by the replay guard.
+    store.set_totp_secret(admin.id, secret)
+    assert store.enable_totp(admin.id) is True
     return {
         "username": admin.username,
         "password": "naswatch-admin-password",
-        "totp_code": login_code,
+        "totp_code": totp.hotp(secret, totp.counter_for(now)),
     }

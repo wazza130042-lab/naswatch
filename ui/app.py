@@ -29,7 +29,7 @@ st.set_page_config(page_title="NASWatch", page_icon="🛡️", layout="wide", in
 
 from ui.login import login_page
 from ui.views import event_search, incidents, inventory, overview, reports, security, topology, users
-from ui.rbac import ROLE_DESCRIPTIONS, ROLE_LABELS, has
+from ui.rbac import ROLE_LABELS, has
 from ui.routing import ACCOUNT_PAGES, ADMIN_PAGES, AUDIT_PAGES, DETAIL_PAGES, WORKSPACE_PAGES, goto, restore_page, slug_for, sync_url
 from ui.session import (
     _clear_session_cookie,
@@ -55,7 +55,6 @@ def _render_settings_menu(username: str, role: str) -> None:
     rh = role_hex.get(role, "139,147,163")
     safe_user = escape(username or "operator")
     safe_role = escape(ROLE_LABELS.get(role, ROLE_LABELS["viewer"]))
-    safe_role_description = escape(ROLE_DESCRIPTIONS.get(role, ROLE_DESCRIPTIONS["viewer"]))
     initial = (safe_user[:1] or "?").upper()
 
     # Streamlit keeps a popover open across reruns, so selecting an item would
@@ -71,14 +70,11 @@ def _render_settings_menu(username: str, role: str) -> None:
                 <div class="settings-head">
                   <div class="settings-eyebrow">Operator session</div>
                   <div class="settings-id">
-                    <span class="settings-avatar"
-                          style="background:rgba({rh},0.16);border:1px solid rgba({rh},0.40);color:{rc};">{initial}</span>
-                    <span class="settings-text">
-                      <span class="settings-name">{safe_user}</span>
-                      <span class="settings-sub">{safe_role_description}</span>
-                    </span>
-                    <span class="settings-role"
-                          style="background:rgba({rh},0.14);border:1px solid rgba({rh},0.32);color:{rc};">{safe_role}</span>
+                    <div class="settings-avatar"
+                          style="background:rgba({rh},0.16);border:1px solid rgba({rh},0.40);color:{rc};">{initial}</div>
+                    <div class="settings-text">
+                      <div class="settings-name">{safe_user}</div>
+                    </div>
                   </div>
                 </div>
                 <div class="settings-sep"></div>

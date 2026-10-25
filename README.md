@@ -133,7 +133,9 @@ flowchart TD
   enrol: after a correct password, an operator without a second factor is taken to a forced enrolment
   screen (scan the QR or enter the setup key) and **cannot reach any console page until they confirm a
   code** — this applies to the first-run administrator too. After enrolment, sign-in is password **+**
-  a 6-digit code. Codes are validated with a ±30 s drift window to tolerate clock skew. Admins can
+  a 6-digit code. A code is only valid for its own 30 s step: it stops working the moment the
+  authenticator app rolls over, so the appliance and the device clock must stay in sync (the sign-in
+  and enrolment screens show the live server time). Admins can
   reset an operator's 2FA from **Settings ⚙ → User management** (the operator re-enrols at next
   sign-in); replacing your own authenticator requires the account password. The API's
   `POST /api/v1/auth/login` enforces the same second factor via the `totp_code` field. The TOTP

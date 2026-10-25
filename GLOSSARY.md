@@ -206,7 +206,7 @@ enabled/disabled and their thresholds set in `config/settings.yaml`.
 | **Enrolment** | The one-time setup: scan the QR (or type the setup key) and confirm a code. **Forced on first sign-in** — you cannot reach any page until it's done. |
 | **Setup key / secret** | The base32 string shared between the server and your app (it's what the QR encodes). |
 | **otpauth URI** | The `otpauth://totp/…` link alternative to scanning the QR. |
-| **Drift window** | NASWatch accepts codes ±30 s around the current step (`window=1`) to tolerate clock skew. Keep the device clock synced. |
+| **Drift window** | How far from the current 30 s step a code may be. NASWatch uses `window=0`: only the step the code was generated for is accepted, so a code dies the moment the app rolls over. Keep the device clock synced. |
 | **Reset 2FA** | Admin action in **User management**: clears a lost device's secret so the operator re-enrols at next sign-in. |
 | **Session cookie** | The signed token stored in the browser that keeps you signed in across refreshes (7-day expiry). |
 | **JWT** | *JSON Web Token* — the signed token format used for sessions and the API. |

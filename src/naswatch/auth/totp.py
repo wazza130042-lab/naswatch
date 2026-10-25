@@ -8,11 +8,17 @@ any authenticator app (Google Authenticator, Authy, Microsoft Authenticator,
 Time synchronisation
 --------------------
 TOTP derives the code from the **Unix time** divided into 30-second steps. The
-server clock and the phone clock therefore have to agree. We accept one step of
-drift in either direction (``window=1``, i.e. +/-30s) to tolerate the usual NTP
-error. For a stationary appliance keep NTP (``systemd-timesyncd``/``chronyd``)
-enabled; the enrollment screen shows the live server time so an operator can
-spot a badly skewed clock immediately.
+server clock and the phone clock therefore have to agree, and only the step the
+code was generated for is accepted (``window=0``): as soon as the authenticator
+app rolls over, the previous code is dead. An operator whose device clock is off
+by more than 30 seconds cannot sign in, so keep NTP
+(``systemd-timesyncd``/``chronyd``) enabled on the appliance; the login and
+enrollment screens show the live server time so a skewed clock is spotted
+immediately.
+
+A wider tolerance is available through the ``window`` argument (``window=1``
+accepts the previous/next step too) but it must be opted into explicitly, since
+it also keeps expired codes alive.
 """
 
 from __future__ import annotations
@@ -86,15 +92,16 @@ def verify(
     secret: str | None,
     code: str | None,
     when: float | None = None,
-    window: int = 1,
+    window: int = 0,
     step: int = STEP_SECONDS,
     digits: int = DIGITS,
 ) -> bool:
     """Check ``code`` against the TOTP for ``when``, tolerating +/- ``window`` steps.
 
-    Comparisons are constant-time and the previous/next step is accepted so a
-    modest clock skew between the appliance and the operator's phone does not
-    lock them out.
+    Comparisons are constant-time. The default of ``window=0`` accepts only the
+    step the code belongs to, so a code stops working the moment the
+    authenticator app rolls over; widen ``window`` explicitly to tolerate clock
+    skew between the appliance and the operator's device.
     """
     return matching_counter(secret, code, when=when, window=window, step=step, digits=digits) is not None
 
@@ -103,7 +110,7 @@ def matching_counter(
     secret: str | None,
     code: str | None,
     when: float | None = None,
-    window: int = 1,
+    window: int = 0,
     step: int = STEP_SECONDS,
     digits: int = DIGITS,
 ) -> int | None:

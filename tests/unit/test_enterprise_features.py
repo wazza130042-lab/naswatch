@@ -275,7 +275,7 @@ def test_api_enterprise_endpoints(enrolled_admin_login):
     sa_secret = totp.generate_secret()
     sa_now = time.time()
     store.complete_totp_enrollment(
-        superadmin.id, sa_secret, totp.hotp(sa_secret, totp.counter_for(sa_now) - 1), when=sa_now
+        superadmin.id, sa_secret, totp.hotp(sa_secret, totp.counter_for(sa_now)), when=sa_now
     )
     from naswatch.auth.jwt_handler import create_access_token
 

@@ -9,7 +9,7 @@ import streamlit as st
 
 from naswatch.auth.password_policy import WeakPasswordError, evaluate
 from ui.password_strength import render_password_strength
-from ui.rbac import ROLE_DESCRIPTIONS, ROLE_LABELS, has
+from ui.rbac import ROLE_LABELS, has
 from ui.store import get_user_store, log_ui_action, revoke_user_sessions
 from ui.components import (
     render_alert_item, render_kpi_cards,
@@ -53,13 +53,6 @@ def render(ctx):
     else:
         from naswatch.storage.models import UserRole
 
-        with st.expander("Role access guide", expanded=False):
-            role_cols = st.columns(4, gap="small")
-            for column, role_name in zip(role_cols, ("admin", "analyst", "viewer", "auditor")):
-                with column:
-                    st.markdown(f"**{ROLE_LABELS[role_name]}**")
-                    st.caption(ROLE_DESCRIPTIONS[role_name])
-
         store = get_user_store()
         if store is None:
             st.error("Identity store is unavailable.")
@@ -93,7 +86,6 @@ def render(ctx):
                     new_role = st.selectbox("Role", ["viewer", "analyst", "auditor", "admin"], index=0, key="new_user_role",
                                             format_func=lambda value: ROLE_LABELS[value],
                                             help="Choose the narrowest role that lets this person do their job.")
-                    st.caption(ROLE_DESCRIPTIONS[new_role])
                 new_password = st.text_input("Initial password", type="password", key="new_user_password")
                 render_password_strength(new_password, username=new_username)
                 create_submitted = st.button("Create account", use_container_width=True, type="primary", key="create_user_submit")
@@ -158,7 +150,6 @@ def render(ctx):
                         format_func=lambda value: ROLE_LABELS[value],
                         key=f"user_role_{target.id}",
                     )
-                    st.caption(ROLE_DESCRIPTIONS[new_role_value])
                     if st.button("Update role", use_container_width=True, key=f"user_role_btn_{target.id}",
                                  disabled=(is_self and new_role_value != "admin")):
                         try:
