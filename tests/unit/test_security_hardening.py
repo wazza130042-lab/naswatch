@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import jwt as pyjwt
@@ -166,7 +167,8 @@ def test_ephemeral_jwt_secret_gets_a_persistent_audit_key(monkeypatch, tmp_path,
     monkeypatch.setattr(audit_logger, "SECRET_IS_CONFIGURED", False)
     first = audit_logger._audit_key()
     assert keyfile.exists() and len(first) >= 32
-    assert oct(keyfile.stat().st_mode & 0o777) == "0o600"
+    if os.name != "nt":  # Windows has no POSIX permission bits
+        assert oct(keyfile.stat().st_mode & 0o777) == "0o600"
     audit_logger._audit_key.cache_clear()            # simulate a process restart
     assert audit_logger._audit_key() == first        # same key -> chain still verifies
 
