@@ -7,7 +7,7 @@ name = "naswatch"
 version = "0.1.0"
 description = "Passive 5G control-plane IDS for rogue eSIM, identity spoofing, and network-slice intrusion detection"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "NASWatch Security Engineering Team"}
@@ -19,7 +19,6 @@ classifiers = [
     "Intended Audience :: Telecommunications Industry",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -44,6 +43,7 @@ dependencies = [
     "pydantic>=2.6.0",
     # Auth
     "python-jose[cryptography]>=3.3.0",
+    "PyJWT>=2.8.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=4.0,<4.1",
     # QR codes for authenticator-app 2FA enrollment (pure Python)

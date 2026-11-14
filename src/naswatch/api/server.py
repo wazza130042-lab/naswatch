@@ -16,6 +16,8 @@ FastAPI application providing:
 
 from __future__ import annotations
 
+import hmac
+import logging
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -248,8 +250,9 @@ def get_engine() -> DetectionEngine:
             authorized_cells = None
         if authorized_cells is None:
             try:
-                import yaml
                 from pathlib import Path
+
+                import yaml
 
                 cfg_path = Path(os.environ.get("NASWATCH_SETTINGS", "config/settings.yaml"))
                 if cfg_path.exists():
@@ -454,6 +457,41 @@ def _require(permission: str):
     return _inner
 
 
+_METRICS_TOKEN_MIN_BYTES = 32
+_log = logging.getLogger("naswatch.api")
+
+
+def _metrics_scrape_token() -> str | None:
+    """Static bearer token for Prometheus scrapers (NASWATCH_METRICS_TOKEN, >= 32 bytes)."""
+    token = os.environ.get("NASWATCH_METRICS_TOKEN", "").strip()
+    if token and len(token.encode("utf-8")) < _METRICS_TOKEN_MIN_BYTES:
+        _log.warning(
+            "NASWATCH_METRICS_TOKEN is shorter than %d bytes and is ignored.", _METRICS_TOKEN_MIN_BYTES
+        )
+        return None
+    return token or None
+
+
+def _metrics_access(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> None:
+    """
+    Guard for /metrics. Allowed callers:
+      1. A Prometheus scraper presenting ``Authorization: Bearer $NASWATCH_METRICS_TOKEN``.
+      2. Any authenticated user with the ``devices:read`` permission (admin, analyst).
+    Everyone else gets 401/403. (/health stays public: it exposes no operational data and
+    container/Kubernetes probes cannot authenticate.)
+    """
+    token = _metrics_scrape_token()
+    if token and credentials is not None and hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), token.encode("utf-8")
+    ):
+        return
+    actor = get_current_actor(request, credentials)
+    _require("devices:read")(actor)
+
+
 def _is_cross_tenant_admin(actor: dict, target_org: str | None) -> bool:
     """
     True when the actor is a system-wide admin (org id `*`) permitted to manage
@@ -624,9 +662,9 @@ def health_check() -> dict[str, str]:
     }
 
 
-@app.get("/metrics", tags=["Monitoring"])
+@app.get("/metrics", tags=["Monitoring"], dependencies=[Depends(_metrics_access)])
 def prometheus_metrics() -> Response:
-    """Prometheus metrics exporter endpoint for Grafana dashboards."""
+    """Prometheus metrics exporter (authenticated: scrape token or devices:read role)."""
     repo = get_repo()
     PROMETHEUS_DEVICES_GAUGE.set(repo.count_devices())
     return Response(
@@ -1341,7 +1379,7 @@ def list_incidents(
     correlation = get_correlation()
     if not correlation:
         raise HTTPException(status_code=501, detail="Correlation engine not available.")
-    incidents = correlation.get_incidents(limit=limit)
+    incidents = correlation.get_incidents(limit=limit, org_id=actor.get("org_id", "default"))
     return {
         "count": len(incidents),
         "incidents": [i.to_dict() for i in incidents],

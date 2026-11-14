@@ -20,8 +20,22 @@ from typing import Any
 
 logger = logging.getLogger("naswatch.licensing")
 
-# The signing secret — in production this is embedded at build time (never shipped in plaintext)
-LICENSE_SIGNING_SECRET = os.environ.get("NASWATCH_LICENSE_SECRET", "naswatch-signing-secret-v1")
+# The signing secret has NO built-in default. A secret that is published in the source code is
+# not a secret: anyone could mint an ENTERPRISE key. Without NASWATCH_LICENSE_SECRET the
+# validator fails closed (every key is rejected -> COMMUNITY tier) and keys cannot be generated.
+#
+# The previous default is rejected explicitly, so a deployment that still sets it cannot be
+# forged from the public source either.
+_MIN_SECRET_BYTES = 32
+_KNOWN_PUBLIC_SECRETS = {"naswatch-signing-secret-v1"}
+
+
+def _signing_secret() -> bytes | None:
+    """Return the license signing secret, or None when it is missing or unusable."""
+    secret = os.environ.get("NASWATCH_LICENSE_SECRET", "").strip()
+    if not secret or secret in _KNOWN_PUBLIC_SECRETS or len(secret.encode("utf-8")) < _MIN_SECRET_BYTES:
+        return None
+    return secret.encode("utf-8")
 
 
 class LicenseTier(str, Enum):
@@ -72,7 +86,18 @@ def generate_license_key(org_name: str, tier: str, seats: int, expires: str | No
     """
     Generate a NASWatch license key (for use by the licensing server only).
     expires: ISO date string e.g. '2027-01-01' or None for perpetual.
+
+    Raises RuntimeError if NASWATCH_LICENSE_SECRET is not set to a strong value (>= 32 bytes).
+    Note: the signature is an HMAC, so every installation that can *validate* keys holds the
+    secret and could also *issue* them. Keep generation on a machine you control and treat the
+    secret as private; if keys are sold to third parties, switch to asymmetric signatures.
     """
+    secret = _signing_secret()
+    if secret is None:
+        raise RuntimeError(
+            "NASWATCH_LICENSE_SECRET must be set to a random value of at least 32 bytes "
+            "(e.g. `openssl rand -hex 32`) before license keys can be generated."
+        )
     payload = {
         "org": org_name,
         "tier": tier.upper(),
@@ -82,7 +107,7 @@ def generate_license_key(org_name: str, tier: str, seats: int, expires: str | No
     }
     payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
     sig = hmac.new(
-        LICENSE_SIGNING_SECRET.encode(),
+        secret,
         f"{tier.upper()}:{payload_b64}".encode(),
         hashlib.sha256,
     ).hexdigest()[:32]
@@ -137,9 +162,17 @@ def validate_license(license_key: str | None) -> LicenseInfo:
         logger.warning("Invalid license key format.")
         return _COMMUNITY_LICENSE
 
+    secret = _signing_secret()
+    if secret is None:
+        logger.warning(
+            "NASWATCH_LICENSE_SECRET is not set (or is weak/public): license key rejected, "
+            "running in COMMUNITY tier."
+        )
+        return _COMMUNITY_LICENSE
+
     _, tier_str, payload_b64, provided_sig = parts
     expected_sig = hmac.new(
-        LICENSE_SIGNING_SECRET.encode(),
+        secret,
         f"{tier_str}:{payload_b64}".encode(),
         hashlib.sha256,
     ).hexdigest()[:32]

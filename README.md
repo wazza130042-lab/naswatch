@@ -1,13 +1,31 @@
 # 🛡️ NASWatch: Rogue eSIM & 5G Network-Slice Intrusion DetectoR
-### Commercial Enterprise Grade 5G Control-Plane Threat Detection & Response Platform
+### A 5G control-plane intrusion-detection prototype (NGAP/NAS) with a SOAR, RBAC and audit API
 
-[![CI Pipeline](https://github.com/megbaru/naswatch/actions/workflows/ci.yaml/badge.svg)](https://github.com/megbaru/naswatch/actions)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
-[![License: Commercial / Enterprise](https://img.shields.io/badge/License-Commercial%20%2F%20Enterprise-blue.svg)](https://naswatch.io/licensing)
+[![CI Pipeline](https://github.com/wazza130042-lab/naswatch/actions/workflows/ci.yaml/badge.svg)](https://github.com/wazza130042-lab/naswatch/actions)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Tests](https://img.shields.io/badge/tests-30%20passed-success.svg)](tests/)
 
-> **A carrier-grade passive 5G control-plane Intrusion Detection & Response System (IDS/NDR) inspecting NGAP/NAS signaling traffic to detect unauthorized devices, identity spoofing (SIM cloning / swapping), unauthorized slice access, cipher downgrades, false base stations, and signaling floods in real time — with automated SOAR mitigations, alert correlation, SIEM forwarding, and multi-tenant RBAC.**
+> **A passive 5G control-plane Intrusion Detection & Response System (IDS/NDR) prototype. It inspects NGAP/NAS signaling (PCAP replay or live capture) to flag unauthorized devices, identity spoofing (SIM cloning / swapping), unauthorized slice access, cipher downgrades, false base stations, and signaling floods — with SOAR mitigations, alert correlation, SIEM forwarding, and multi-tenant RBAC.**
+
+---
+
+## 🚦 Project Status & Known Limitations
+
+NASWatch is a working prototype, validated on **synthetic traffic and a small Open5GS/UERANSIM lab** only.
+Read this before relying on it:
+
+- **Detection quality is unmeasured.** There are no published precision/recall or false-positive figures,
+  and it has not been evaluated against public 5G captures or real operator traffic.
+- **Throughput is unbenchmarked.** Parsing is Python/PyShark-based; expect it to be the bottleneck well below
+  carrier signaling rates. Treat it as a lab / small private-network tool until measured.
+- **Concealed SUCIs cannot be matched to the inventory.** Subscribers using ECIES-protected SUCI (profiles A/B)
+  are reported as concealed rather than guessed, so IMSI-based rules cannot fire for them from the air interface alone.
+- **Static thresholds.** Rules such as the signaling-flood detector use configured thresholds, not learned baselines.
+- **Unit tests use author-generated fixtures** (cross-checked against Wireshark's `nas-5gs` dissector when `tshark` is
+  installed). Run `pytest --cov=naswatch --cov-report=term-missing` for current coverage; it is not 100%.
+- **License keys are a demonstration of tier gating, not copy protection.** The repository is MIT-licensed, so anyone
+  can edit the source and remove the gate.
 
 ---
 
@@ -27,7 +45,7 @@ However, cellular signaling is exposed to novel attack vectors:
 
 ---
 
-## 🏗️ Commercial Enterprise Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
@@ -111,7 +129,7 @@ flowchart TD
 
 ---
 
-## 💼 Commercial & Enterprise Features
+## 💼 Features
 
 ### 1. 🔐 Authentication, Authorization & RBAC
 - **First-Run Setup (no default credentials):** a fresh install ships **no** accounts and no
@@ -171,11 +189,11 @@ Configure `NASWATCH_CORE_REVOCATION_URL` and `NASWATCH_CORE_REVOCATION_TOKEN` in
 
 ### 5. 📜 Immutable Audit Trail
 - All administrative, authentication, and mitigation actions are logged with actor identity, timestamp, IP address, and a **tamper-evident, keyed hash chain**.
-- Each entry's integrity is an **HMAC-SHA256** (keyed by `NASWATCH_JWT_SECRET`), and every entry stores the hash of its predecessor, so any modification or reordering breaks the chain. `/api/v1/audit/verify` reports exactly which entries were tampered with.
+- Each entry's integrity is an **HMAC-SHA256** (keyed by `NASWATCH_AUDIT_KEY`, or by `NASWATCH_JWT_SECRET` when no audit key is set, so existing chains keep verifying), and every entry stores the hash of its predecessor, so any modification or reordering breaks the chain. `/api/v1/audit/verify` reports exactly which entries were tampered with.
 
 ### 6. 📊 Grafana SOC Dashboards & Prometheus Monitoring
 - Bundled Grafana 10.x dashboard with pre-provisioned Prometheus data sources and live KPI panels.
-- Prometheus `/metrics` exposes request, packet, alert, authentication (login/refresh/SSO), and user-directory counters for SOC alerting.
+- Prometheus `/metrics` exposes request, packet, alert, authentication (login/refresh/SSO), and user-directory counters for SOC alerting. It is **authenticated**: scrapers send `Authorization: Bearer $NASWATCH_METRICS_TOKEN` (see *Secrets & Configuration*); logged-in admins/analysts may also read it. `/health` stays public for container probes and returns no operational data.
 
 ---
 
@@ -247,12 +265,14 @@ naswatch/
 │   └── run_pipeline.py         # Headless CLI runner
 │
 └── tests/
-    └── unit/                   # 30 Unit Tests covering 100% of core & enterprise modules
+    └── unit/                   # Unit and regression tests (parsers, rules, API, auth, security)
         ├── test_rules.py
         ├── test_parsers.py
         ├── test_repository.py
         ├── test_api_and_soar.py
-        └── test_commercial_features.py
+        ├── test_commercial_features.py
+        ├── test_detection_regressions.py   # NAS/SUCI parsing, packet-time flood rule, correlation
+        └── test_security_hardening.py      # license secret, JWT, audit-key stability
 ```
 
 ---
@@ -267,10 +287,10 @@ sudo apt-get update
 sudo apt-get install -y tshark libpcap-dev wireshark-common
 
 # Clone repository
-git clone https://github.com/megbaru/naswatch.git
+git clone https://github.com/wazza130042-lab/naswatch.git
 cd naswatch
 
-# Install in editable mode with development & commercial dependencies
+# Install in editable mode with development dependencies
 python3 -m pip install -e ".[dev]"
 ```
 
@@ -423,53 +443,40 @@ NASWatch inspects the gNB ↔ AMF N2/N1 SCTP interface. To generate live traffic
 
 ---
 
-## 🧪 Testing & Quality Assurance
+## 🔑 Secrets & Configuration
 
-Run the comprehensive 30-test unit suite:
+Nothing security-relevant has a built-in default. Generate each value with `openssl rand -hex 32`.
 
-```bash
-pytest -v tests/unit/
-```
+| Variable | Needed for | If missing |
+|---|---|---|
+| `NASWATCH_JWT_SECRET` | Signing API tokens (≥ 32 bytes) | Production refuses to start; development uses a random per-process key (sessions end on restart) |
+| `NASWATCH_METRICS_TOKEN` | Prometheus access to `/metrics` (≥ 32 bytes) | `/metrics` only accepts logged-in admin/analyst users |
+| `NASWATCH_AUDIT_KEY` | Keying the audit hash chain (optional, ≥ 32 bytes) | Falls back to the JWT secret; if that is a random dev key, a key is persisted to `data/.audit_key` |
+| `NASWATCH_LICENSE_SECRET` | Generating/validating license keys (≥ 32 bytes) | Every license key is rejected and the app runs in the COMMUNITY tier |
 
-Expected output:
-```
-tests/unit/test_api_and_soar.py::test_soar_engine_revocation_and_report PASSED
-tests/unit/test_api_and_soar.py::test_fastapi_rest_endpoints PASSED
-tests/unit/test_commercial_features.py::test_jwt_lifecycle_and_password_hashing PASSED
-tests/unit/test_commercial_features.py::test_api_key_store PASSED
-tests/unit/test_commercial_features.py::test_rbac_permissions_matrix PASSED
-tests/unit/test_commercial_features.py::test_licensing_system PASSED
-tests/unit/test_commercial_features.py::test_audit_logger_integrity PASSED
-tests/unit/test_commercial_features.py::test_correlation_engine_incident_escalation PASSED
-tests/unit/test_commercial_features.py::test_siem_integration_clients PASSED
-tests/unit/test_commercial_features.py::test_commercial_api_endpoints PASSED
-tests/unit/test_parsers.py::test_decode_bcd_digits PASSED
-tests/unit/test_parsers.py::test_parse_raw_nas_registration_request PASSED
-tests/unit/test_parsers.py::test_parse_raw_nas_identity_response PASSED
-tests/unit/test_parsers.py::test_parse_raw_nas_security_mode_complete PASSED
-tests/unit/test_parsers.py::test_parse_raw_nas_pdu_session_slice PASSED
-tests/unit/test_parsers.py::test_defensive_parser_malformed_packets PASSED
-tests/unit/test_repository.py::test_sqlite_device_repository PASSED
-tests/unit/test_repository.py::test_sqlite_alert_repository PASSED
-tests/unit/test_rules.py::test_rogue_device_unknown_imsi PASSED
-tests/unit/test_rules.py::test_rogue_device_suspended_subscriber PASSED
-tests/unit/test_rules.py::test_rogue_device_benign_allowed PASSED
-tests/unit/test_rules.py::test_identity_spoofing_mismatched_imei PASSED
-tests/unit/test_rules.py::test_identity_spoofing_clean PASSED
-tests/unit/test_rules.py::test_slice_intrusion_unauthorized_sst PASSED
-tests/unit/test_rules.py::test_slice_intrusion_unauthorized_sd PASSED
-tests/unit/test_rules.py::test_slice_intrusion_authorized PASSED
-tests/unit/test_rules.py::test_detection_engine_pipeline PASSED
-tests/unit/test_rules.py::test_cipher_downgrade_detection PASSED
-tests/unit/test_rules.py::test_false_base_station_detection PASSED
-tests/unit/test_rules.py::test_signaling_flood_detection PASSED
-
-============================== 30 passed in 2.72s ==============================
-```
+For Prometheus, write the same token to a file it can read:
+`mkdir -p config/secrets && printf %s "$NASWATCH_METRICS_TOKEN" > config/secrets/metrics_token`.
 
 ---
 
-## 📄 Licensing & Commercial Support
+## 🧪 Testing & Quality Assurance
 
-NASWatch is available under Community and Commercial Enterprise Licensing tiers.
-For enterprise trials, SLA contracts, and custom 5G core dissectors, visit [naswatch.io](https://naswatch.io).
+```bash
+pip install -e ".[dev]"
+pytest -v tests/unit/                                   # run the suite
+pytest --cov=naswatch --cov-report=term-missing tests/  # measure coverage
+```
+
+The suite includes regression tests for TS 24.501 NAS parsing (cross-checked against `tshark` when installed),
+packet-time flood detection, incident correlation, license-key forgery, JWT validation and audit-chain
+stability. Tests that need `tshark` are skipped when it is absent.
+
+---
+
+## 📄 License
+
+Released under the [MIT License](LICENSE).
+
+The code contains a COMMUNITY / PROFESSIONAL / ENTERPRISE feature-gating mechanism driven by
+signed license keys (`src/naswatch/licensing/`). It demonstrates how tiered features could be
+enforced; because the source is MIT-licensed it is not a technical or legal barrier to using any feature.

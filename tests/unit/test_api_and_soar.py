@@ -4,6 +4,8 @@ Unit tests for SOAR engine and FastAPI REST endpoints.
 
 from __future__ import annotations
 
+import os
+
 from fastapi.testclient import TestClient
 
 from naswatch.api.server import app
@@ -68,8 +70,12 @@ def test_fastapi_rest_endpoints(enrolled_admin_login):
     assert r_health.status_code == 200
     assert r_health.json()["status"] == "healthy"
 
-    # Prometheus Metrics (public)
-    r_metrics = client.get("/metrics")
+    # Prometheus Metrics: NOT public. Anonymous and wrong-token callers are rejected;
+    # a Prometheus scraper uses the configured bearer token.
+    assert client.get("/metrics").status_code == 401
+    assert client.get("/metrics", headers={"Authorization": "Bearer not-the-token"}).status_code == 401
+    scrape = {"Authorization": f"Bearer {os.environ['NASWATCH_METRICS_TOKEN']}"}
+    r_metrics = client.get("/metrics", headers=scrape)
     assert r_metrics.status_code == 200
     assert "naswatch_packets_inspected_total" in r_metrics.text
 
@@ -85,6 +91,9 @@ def test_fastapi_rest_endpoints(enrolled_admin_login):
     assert r_login.status_code == 200
     token = r_login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
+
+    # An authenticated admin (devices:read) may also read /metrics
+    assert client.get("/metrics", headers=headers).status_code == 200
 
     # Provision Device via API with Bearer token
     dev_payload = {

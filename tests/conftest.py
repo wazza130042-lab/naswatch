@@ -17,6 +17,10 @@ from datetime import UTC, datetime
 # real data/ store. pytest imports conftest before the test modules, so setting
 # these here takes effect before those modules import naswatch.
 os.environ.setdefault("NASWATCH_JWT_SECRET", "test-secret-" + "0" * 32)
+# License keys and /metrics have no built-in default secret/token any more (fail closed), so
+# the suite supplies its own.
+os.environ.setdefault("NASWATCH_LICENSE_SECRET", "test-license-secret-" + "0" * 32)
+os.environ.setdefault("NASWATCH_METRICS_TOKEN", "test-metrics-token-" + "0" * 32)
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="naswatch-tests-")
 os.environ.setdefault("NASWATCH_DB_PATH", os.path.join(_TEST_DB_DIR, "inventory.db"))
 

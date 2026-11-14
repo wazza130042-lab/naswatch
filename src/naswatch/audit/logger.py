@@ -5,8 +5,8 @@ Records all security-significant actions: logins, SOAR actions, device provision
 key management, alert status changes.
 
 Tamper-evidence:
-  - Each row carries an HMAC-SHA256 `integrity` over its own content, keyed with
-    `NASWATCH_JWT_SECRET`. Without the key, a forged row cannot be re-signed.
+  - Each row carries an HMAC-SHA256 `integrity` over its own content, keyed with the audit key
+    (see `_audit_key`). Without the key, a forged row cannot be re-signed.
   - Each row also carries a `prev_hash`, chaining every entry to the one before it
     (hash chain). Altering any historical row breaks that row plus every row that
     follows it, making retroactive tampering detectable by `verify_chain()`.
@@ -18,16 +18,71 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import secrets
 import uuid
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-from naswatch.auth.jwt_handler import SECRET_KEY
+from naswatch.auth.jwt_handler import SECRET_IS_CONFIGURED, SECRET_KEY
 from naswatch.storage.db import SqlBackend
 
 logger = logging.getLogger("naswatch.audit")
 
 _VERSION = "v2"
+_MIN_KEY_BYTES = 32
+
+
+@lru_cache(maxsize=1)
+def _audit_key() -> bytes:
+    """
+    Resolve the HMAC key for the audit hash chain. The key must be STABLE across restarts,
+    otherwise `verify_chain()` cannot validate rows written by an earlier process.
+
+    Order:
+      1. ``NASWATCH_AUDIT_KEY`` (>= 32 bytes) - a dedicated key, recommended so that rotating
+         the JWT secret does not invalidate the audit trail. To keep an existing chain
+         verifiable, set it to the value of the JWT secret that signed that chain.
+      2. The JWT secret, when the operator configured one (unchanged legacy behaviour, so
+         existing chains keep verifying).
+      3. Development only: the JWT secret is a random per-process key, so a random audit key is
+         generated once and persisted to ``NASWATCH_AUDIT_KEY_FILE`` (default
+         ``data/.audit_key``, mode 0600) and reused on restart.
+    """
+    explicit = os.environ.get("NASWATCH_AUDIT_KEY", "").strip()
+    if explicit:
+        if len(explicit.encode("utf-8")) < _MIN_KEY_BYTES:
+            raise RuntimeError(
+                f"NASWATCH_AUDIT_KEY must be at least {_MIN_KEY_BYTES} bytes "
+                "(generate one with `openssl rand -hex 32`)."
+            )
+        return explicit.encode("utf-8")
+
+    if SECRET_IS_CONFIGURED:
+        return SECRET_KEY.encode("utf-8")
+
+    path = Path(os.environ.get("NASWATCH_AUDIT_KEY_FILE", "data/.audit_key"))
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if len(existing.encode("utf-8")) >= _MIN_KEY_BYTES:
+                return existing.encode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new_key = secrets.token_hex(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_key)
+        logger.warning("Generated a persistent development audit key at %s.", path)
+        return new_key.encode("utf-8")
+    except OSError as exc:
+        logger.error(
+            "Cannot persist an audit key (%s). Falling back to a process-random key: audit rows "
+            "written by this process will NOT verify after a restart. Set NASWATCH_AUDIT_KEY.",
+            exc,
+        )
+        return secrets.token_bytes(32)
 
 
 class AuditLogger:
@@ -119,7 +174,7 @@ class AuditLogger:
 
     def _compute_integrity(self, row_data: dict, prev_hash: str) -> str:
         """Keyed HMAC-SHA256 integrity over the row content + chain link (v2)."""
-        digest = hmac.new(SECRET_KEY.encode(), self._message(row_data, prev_hash).encode(), hashlib.sha256)
+        digest = hmac.new(_audit_key(), self._message(row_data, prev_hash).encode(), hashlib.sha256)
         return f"{_VERSION}:{digest.hexdigest()}"
 
     def _legacy_integrity(self, row_data: dict, prev_hash: str) -> str:

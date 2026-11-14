@@ -9,6 +9,7 @@ Generates realistic SCTP / NGAP / NAS-5GS control-plane packets with Scapy:
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from scapy.all import IP, SCTP, Raw, wrpcap
@@ -26,67 +27,104 @@ def encode_bcd(digits: str) -> bytes:
     return bytes(encoded)
 
 
-def build_nas_registration_request(imsi: str) -> bytes:
+def encode_suci(imsi: str, mnc_len: int = 2, protection_scheme: int = 0) -> bytes:
+    """
+    Encode a 5GS Mobile Identity of type SUCI as laid out in TS 24.501 section 9.11.3.4:
+
+      octet 1     : SUPI format (0 = IMSI) in bits 5-7 | identity type 1 (SUCI) in bits 1-3
+      octets 2-4  : PLMN  (MCC digit 2|1, MNC digit 3|MCC digit 3, MNC digit 2|1)
+      octets 5-6  : routing indicator
+      octet 7     : protection scheme id (0 = null, 1 = Profile A, 2 = Profile B)
+      octet 8     : home network public key identifier
+      octets 9+   : scheme output (BCD MSIN for null scheme, ciphertext otherwise)
+    """
+    mcc, mnc, msin = imsi[:3], imsi[3 : 3 + mnc_len], imsi[3 + mnc_len :]
+    mnc3 = mnc[2] if mnc_len == 3 else "f"
+    plmn = bytes(
+        [
+            (int(mcc[1]) << 4) | int(mcc[0]),
+            (int(mnc3, 16) << 4) | int(mcc[2]),
+            (int(mnc[1]) << 4) | int(mnc[0]),
+        ]
+    )
+    if protection_scheme == 0:
+        output = encode_bcd(msin)
+    else:
+        # Opaque stand-in for ECIES output; the parser must never read this as digits.
+        output = hashlib.sha256(msin.encode()).digest()
+    return bytes([0x01]) + plmn + b"\x00\x00" + bytes([protection_scheme, 0x01 if protection_scheme else 0x00]) + output
+
+
+def encode_imei_identity(digits: str) -> bytes:
+    """Encode an IMEI (15 digits) or IMEISV (16 digits) 5GS Mobile Identity.
+
+    The first digit lives in the HIGH nibble of octet 1 (with odd/even bit 4 and
+    type 3 = IMEI / 5 = IMEISV in the low bits); the rest is TBCD, low nibble first.
+    """
+    id_type = 0x03 if len(digits) == 15 else 0x05
+    odd = 0x08 if len(digits) % 2 else 0x00
+    first = (int(digits[0]) << 4) | odd | id_type
+    return bytes([first]) + encode_bcd(digits[1:])
+
+
+def build_nas_registration_request(
+    imsi: str, mnc_len: int = 2, protection_scheme: int = 0
+) -> bytes:
     """
     Construct 5GS Registration Request NAS-PDU.
     EPD: 0x7E (5GS MM)
     Sec Header: 0x00 (Plain NAS)
     Msg Type: 0x41 (Registration Request)
     5GS Registration Type: 0x01 (Initial Registration)
-    5GS Mobile Identity: SUCI / IMSI
+    5GS Mobile Identity: SUCI (spec layout, see ``encode_suci``)
     """
-    bcd_imsi = encode_bcd(imsi)
-    # Mobile identity format: [Type: 0x01 (SUPI/IMSI), Routing indicator (2 bytes), Protection scheme (1 byte), Home network PKI (1 byte), MSIN/BCD]
-    mobile_id = b"\x01\x00\x00\x00\x00" + bcd_imsi
+    mobile_id = encode_suci(imsi, mnc_len=mnc_len, protection_scheme=protection_scheme)
     id_len = len(mobile_id).to_bytes(2, "big")
-
     nas_payload = bytearray([0x7E, 0x00, 0x41, 0x01]) + id_len + mobile_id
     return bytes(nas_payload)
 
 
 def build_nas_identity_response(imsi: str | None = None, imei: str | None = None) -> bytes:
     """
-    Construct 5GS Identity Response NAS-PDU (Msg Type 0x5B).
+    Construct 5GS Identity Response NAS-PDU (Msg Type 0x5C; 0x5B is Identity Request).
     """
     if imsi:
-        bcd = encode_bcd(imsi)
-        mob_id = b"\x01\x00\x00\x00\x00" + bcd
+        mob_id = encode_suci(imsi)
     elif imei:
-        bcd = encode_bcd(imei)
-        mob_id = b"\x03" + bcd  # 0x03 = IMEI
+        mob_id = encode_imei_identity(imei)
     else:
         mob_id = b"\x01\x00"
 
     id_len = len(mob_id).to_bytes(2, "big")
-    nas_payload = bytearray([0x7E, 0x00, 0x5B]) + id_len + mob_id
+    nas_payload = bytearray([0x7E, 0x00, 0x5C]) + id_len + mob_id
     return bytes(nas_payload)
 
 
 def build_nas_security_mode_complete(imeisv: str) -> bytes:
     """
-    Construct 5GS Security Mode Complete NAS-PDU (Msg Type 0x56) with embedded IMEISV.
+    Construct 5GS Security Mode Complete NAS-PDU (Msg Type 0x5E) carrying the optional
+    IMEISV IE (IEI 0x77, TLV-E) whose value is a 5GS mobile identity of type IMEISV.
     """
-    bcd_imei = encode_bcd(imeisv)
-    # IE 0x77 / 0x5c for IMEISV
-    nas_payload = bytearray([0x7E, 0x00, 0x56, 0x77, len(bcd_imei)]) + bcd_imei
-    return bytes(nas_payload)
+    ident = encode_imei_identity(imeisv)
+    return bytes([0x7E, 0x00, 0x5E, 0x77]) + len(ident).to_bytes(2, "big") + ident
 
 
 def build_nas_pdu_session_establishment_request(sst: int, sd: str | None = None) -> bytes:
     """
-    Construct 5GS PDU Session Establishment Request (Msg Type 0xC1) with S-NSSAI IE (0x22).
+    Construct a 5GMM UL NAS Transport (0x67) carrying a 5GSM PDU Session Establishment
+    Request (0xC1) as its N1 SM payload container, plus the PDU session ID IE (0x12)
+    and the S-NSSAI IE (0x22) that selects the slice.
     """
-    nas_payload = bytearray([0x2E, 0x00, 0xC1, 0x01])
-    # S-NSSAI IE: IEI = 0x22
+    # 5GSM: EPD 0x2E | PDU session ID | PTI | message type | integrity protection max data rate
+    sm_message = bytes([0x2E, 0x01, 0x01, 0xC1, 0xFF, 0xFF])
+    nas = bytearray([0x7E, 0x00, 0x67, 0x01]) + len(sm_message).to_bytes(2, "big") + sm_message
+    nas += bytearray([0x12, 0x01])  # PDU session ID IE
     if sd:
         sd_bytes = bytes.fromhex(sd.replace("0x", "").zfill(6))
-        # Length 4: SST (1) + SD (3)
-        nas_payload += bytearray([0x22, 0x04, sst]) + sd_bytes
+        nas += bytearray([0x22, 0x04, sst]) + sd_bytes
     else:
-        # Length 1: SST only
-        nas_payload += bytearray([0x22, 0x01, sst])
-
-    return bytes(nas_payload)
+        nas += bytearray([0x22, 0x01, sst])
+    return bytes(nas)
 
 
 def build_mock_signaling_pcap(output_path: str = "data/pcaps/5g_signaling_demo.pcap") -> str:

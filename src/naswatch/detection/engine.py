@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
+from datetime import UTC
 
 from naswatch.detection.rules import (
     detect_cipher_downgrade,
@@ -37,6 +38,7 @@ class DetectionEngine:
         authorized_cells: list[str] | None = None,
         flood_threshold: int = 15,
         flood_window_seconds: float = 5.0,
+        alert_cooldown_seconds: float = 60.0,
     ):
         self.device_repo = device_repo
         self.enable_rogue_rule = enable_rogue_rule
@@ -48,9 +50,54 @@ class DetectionEngine:
         self.authorized_cells = authorized_cells
         self.flood_threshold = flood_threshold
         self.flood_window_seconds = flood_window_seconds
+        # Identical alerts (same rule, subscriber, hardware, cell and slice) are emitted at most
+        # once per cooldown; repeats are counted and reported on the next emitted alert.
+        # Set to 0 to disable suppression.
+        self.alert_cooldown_seconds = alert_cooldown_seconds
 
-        # Stateful windowed rate tracker: imsi -> deque of timestamps
+        # Stateful windowed rate tracker: imsi -> deque of EVENT timestamps (epoch seconds)
         self._rate_tracker: dict[str, deque[float]] = defaultdict(deque)
+        # Alert suppression state: key -> [first_emitted_at, suppressed_count]
+        self._recent_alerts: dict[tuple, list[float]] = {}
+        self._events_seen = 0
+        self._GC_EVERY = 1024
+
+    @staticmethod
+    def _event_time(event: ParsedSignalingEvent) -> float:
+        """Epoch seconds of the *packet*, so replaying an old capture behaves like live traffic."""
+        ts = getattr(event, "timestamp", None)
+        if ts is None:
+            return time.time()
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts.timestamp()
+
+    def _gc(self, now: float) -> None:
+        """Drop per-IMSI rate windows and suppression entries that can no longer matter."""
+        stale_before = now - self.flood_window_seconds
+        for imsi in [k for k, dq in self._rate_tracker.items() if not dq or dq[-1] < stale_before]:
+            del self._rate_tracker[imsi]
+        expire_before = now - max(self.alert_cooldown_seconds, 0.0)
+        for key in [k for k, v in self._recent_alerts.items() if v[0] < expire_before]:
+            del self._recent_alerts[key]
+
+    def _suppress_duplicates(self, alerts: list[Alert], now: float) -> list[Alert]:
+        """Collapse alert storms: one alert per (rule, imsi, imei, cell, slice) per cooldown."""
+        if self.alert_cooldown_seconds <= 0 or not alerts:
+            return alerts
+        emitted: list[Alert] = []
+        for alert in alerts:
+            key = (alert.rule_type, alert.imsi, alert.imei, alert.cell_id, alert.target_slice)
+            state = self._recent_alerts.get(key)
+            if state is not None and (now - state[0]) < self.alert_cooldown_seconds:
+                state[1] += 1
+                continue
+            suppressed = int(state[1]) if state else 0
+            self._recent_alerts[key] = [now, 0]
+            if suppressed:
+                alert.raw_event = {**(alert.raw_event or {}), "suppressed_duplicates": suppressed}
+            emitted.append(alert)
+        return emitted
 
     @staticmethod
     def _attach_event_context(alerts: list[Alert], event: ParsedSignalingEvent) -> None:
@@ -95,7 +142,7 @@ class DetectionEngine:
         if event.procedure_name not in {"InitialUEMessage", "RegistrationRequest"}:
             return None
 
-        now = time.time()
+        now = self._event_time(event)
         dq = self._rate_tracker[event.imsi]
         dq.append(now)
 
@@ -136,6 +183,10 @@ class DetectionEngine:
             List of generated security alerts (empty if clean traffic).
         """
         alerts: list[Alert] = []
+        now = self._event_time(event)
+        self._events_seen += 1
+        if self._events_seen % self._GC_EVERY == 0:
+            self._gc(now)
 
         # If event lacks subscriber identifiers, check cell anomalies
         if not event.imsi and not event.imei:
@@ -143,8 +194,7 @@ class DetectionEngine:
                 bs_alert = detect_false_base_station(event, self.authorized_cells)
                 if bs_alert:
                     alerts.append(bs_alert)
-            self._attach_event_context(alerts, event)
-            return alerts
+            return self._finalize(alerts, event, now)
 
         # Fetch device from inventory repository
         known_device = None
@@ -158,10 +208,6 @@ class DetectionEngine:
             rogue_alert = detect_rogue_device(event, known_device)
             if rogue_alert:
                 alerts.append(rogue_alert)
-                logger.warning(
-                    f"Rogue device alert triggered: IMSI={event.imsi}, Cell={event.cell_id}",
-                    extra={"extra_fields": {"rule": "ROGUE_DEVICE", "imsi": event.imsi}},
-                )
 
         # If it's a known device, evaluate Spoofing and Slice Intrusion
         if known_device is not None:
@@ -170,49 +216,41 @@ class DetectionEngine:
                 spoof_alert = detect_identity_spoofing(event, known_device)
                 if spoof_alert:
                     alerts.append(spoof_alert)
-                    logger.warning(
-                        f"Identity spoofing detected: IMSI={event.imsi}, Reported_IMEI={event.imei}",
-                        extra={"extra_fields": {"rule": "IDENTITY_SPOOFING", "imsi": event.imsi}},
-                    )
 
             # Rule 3: Network Slice Intrusion
             if self.enable_slice_rule:
                 slice_alert = detect_slice_intrusion(event, known_device)
                 if slice_alert:
                     alerts.append(slice_alert)
-                    logger.warning(
-                        f"Slice intrusion detected: IMSI={event.imsi}, Requested_Slice={slice_alert.target_slice}",
-                        extra={"extra_fields": {"rule": "SLICE_INTRUSION", "slice": slice_alert.target_slice}},
-                    )
 
         # Rule 4: Security Algorithm Downgrade / Null Ciphering
         if self.enable_cipher_rule:
             cipher_alert = detect_cipher_downgrade(event, known_device)
             if cipher_alert:
                 alerts.append(cipher_alert)
-                logger.warning(
-                    f"Cipher downgrade alert: IMSI={event.imsi}, Algo={event.cipher_algo}",
-                    extra={"extra_fields": {"rule": "CIPHER_DOWNGRADE", "imsi": event.imsi}},
-                )
 
         # Rule 5: False Base Station (Rogue gNB)
         if self.enable_false_bs_rule and self.authorized_cells:
             bs_alert = detect_false_base_station(event, self.authorized_cells)
             if bs_alert:
                 alerts.append(bs_alert)
-                logger.warning(
-                    f"False base station detected: Cell={event.cell_id}",
-                    extra={"extra_fields": {"rule": "FALSE_BASE_STATION", "cell": event.cell_id}},
-                )
 
         # Rule 6: Signaling Flood / Storm
         flood_alert = self._check_signaling_flood(event)
         if flood_alert:
             alerts.append(flood_alert)
-            logger.warning(
-                f"Signaling flood detected from IMSI={event.imsi}",
-                extra={"extra_fields": {"rule": "SIGNALING_FLOOD", "imsi": event.imsi}},
-            )
 
+        return self._finalize(alerts, event, now)
+
+    def _finalize(
+        self, alerts: list[Alert], event: ParsedSignalingEvent, now: float
+    ) -> list[Alert]:
+        """Apply duplicate suppression, then log and annotate only the alerts that are emitted."""
+        alerts = self._suppress_duplicates(alerts, now)
+        for alert in alerts:
+            logger.warning(
+                f"{alert.rule_type.value} alert: IMSI={alert.imsi}, Cell={alert.cell_id}",
+                extra={"extra_fields": {"rule": alert.rule_type.value, "imsi": alert.imsi}},
+            )
         self._attach_event_context(alerts, event)
         return alerts

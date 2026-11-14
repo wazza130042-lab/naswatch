@@ -6,7 +6,6 @@ and requested Network Slice info (S-NSSAI: SST, SD) from 3GPP TS 24.501 NAS mess
 
 from __future__ import annotations
 
-import binascii
 import re
 from typing import Any
 
@@ -14,7 +13,8 @@ from naswatch.logging_config import get_logger
 
 logger = get_logger("parsing.nas")
 
-# 5GS NAS Message Types (TS 24.501)
+# 5GMM message types (EPD 0x7E) - TS 24.501 table 9.7.1. Verified against Wireshark's
+# nas-5gs dissector.
 NAS_5GS_MSG_TYPES = {
     0x41: "RegistrationRequest",
     0x42: "RegistrationAccept",
@@ -24,16 +24,36 @@ NAS_5GS_MSG_TYPES = {
     0x46: "DeregistrationAcceptUEOrigin",
     0x47: "DeregistrationRequestUETerm",
     0x48: "DeregistrationAcceptUETerm",
-    0x54: "ServiceRequest",
-    0x56: "SecurityModeComplete",
-    0x5B: "IdentityResponse",
-    0x5C: "AuthenticationResponse",
-    0x5D: "AuthenticationFailure",
+    0x4C: "ServiceRequest",
+    0x4D: "ServiceReject",
+    0x4E: "ServiceAccept",
+    0x54: "ConfigurationUpdateCommand",
+    0x55: "ConfigurationUpdateComplete",
+    0x56: "AuthenticationRequest",
+    0x57: "AuthenticationResponse",
+    0x58: "AuthenticationReject",
+    0x59: "AuthenticationFailure",
+    0x5A: "AuthenticationResult",
+    0x5B: "IdentityRequest",
+    0x5C: "IdentityResponse",
+    0x5D: "SecurityModeCommand",
+    0x5E: "SecurityModeComplete",
+    0x5F: "SecurityModeReject",
+    0x64: "5GMMStatus",
+    0x67: "ULNASTransport",
+    0x68: "DLNASTransport",
+}
+
+# 5GSM message types (EPD 0x2E) - TS 24.501 table 9.7.2. 5GSM header is
+# EPD | PDU session ID | PTI | message type, so the type is the FOURTH octet.
+NAS_5GSM_MSG_TYPES = {
     0xC1: "PDUSessionEstablishmentRequest",
     0xC2: "PDUSessionEstablishmentAccept",
     0xC3: "PDUSessionEstablishmentReject",
-    0xC5: "PDUSessionModificationRequest",
-    0xC9: "PDUSessionReleaseRequest",
+    0xC5: "PDUSessionAuthenticationCommand",
+    0xC9: "PDUSessionModificationRequest",
+    0xD1: "PDUSessionReleaseRequest",
+    0xD3: "PDUSessionReleaseCommand",
 }
 
 
@@ -63,6 +83,8 @@ class NASParser:
             "sd": None,
             "requested_slices": [],
             "msg_type_name": None,
+            "suci_concealed": False,
+            "suci_scheme": None,
         }
 
         try:
@@ -136,12 +158,8 @@ class NASParser:
         return extracted
 
     @staticmethod
-    def parse_raw_nas(payload: bytes) -> dict[str, Any]:
-        """
-        Defensive fallback binary parser for 5GS NAS messages.
-        Extracts message type, IMSI, IMEI, and S-NSSAI directly from bytes.
-        """
-        extracted: dict[str, Any] = {
+    def _blank() -> dict[str, Any]:
+        return {
             "imsi": None,
             "imei": None,
             "guti": None,
@@ -149,92 +167,139 @@ class NASParser:
             "sd": None,
             "requested_slices": [],
             "msg_type_name": None,
+            "suci_concealed": False,
+            "suci_scheme": None,
         }
 
-        if len(payload) < 2:
+    @staticmethod
+    def parse_raw_nas(payload: bytes) -> dict[str, Any]:
+        """
+        Defensive binary parser for 5GS NAS messages (TS 24.501).
+
+        Handles plain and security-protected 5GMM messages and 5GSM messages, and
+        extracts: message type, SUPI/IMSI (null-scheme SUCI), IMEI/IMEISV, and S-NSSAI
+        (Requested NSSAI in Registration Request, S-NSSAI IE in UL NAS Transport).
+
+        Concealed SUCIs (protection scheme != 0) are reported via ``suci_concealed``
+        and are never turned into a fake IMSI. Messages protected with a real cipher
+        cannot be read by a passive observer and simply yield no identity.
+
+        For demo captures that pack several NAS messages into one payload, the bytes
+        after the first message are scanned for further well-formed messages.
+        """
+        extracted = NASParser._blank()
+        if len(payload) < 3:
             return extracted
-
         try:
-            extracted["requested_slices"] = NASParser._scan_requested_nssai(payload)
-            # 5GS NAS header:
-            # Byte 0: Extended Protocol Discriminator (0x7e for 5GS MM, 0x2e for 5GS SM)
-            # Byte 1: Security Header Type
-            _epd = payload[0]
-            sec_header = payload[1] & 0x0F
-
-            offset = 2
-            # If plain NAS (sec_header == 0) or integrity protected
-            if sec_header != 0 and len(payload) >= 7:
-                # 4 bytes MAC (bytes 2..5) + 1 byte Sequence Number (byte 6)
-                offset = 7
-
-            if offset >= len(payload):
-                return extracted
-
-            msg_type = payload[offset]
-            extracted["msg_type_name"] = NAS_5GS_MSG_TYPES.get(
-                msg_type, f"Unknown_0x{msg_type:02x}"
-            )
-            offset += 1
-
-            # Registration Request (0x41)
-            if msg_type == 0x41 and offset + 2 <= len(payload):
-                # 5GS Registration type & ngKSI
-                offset += 1
-                if offset + 2 <= len(payload):
-                    id_len = int.from_bytes(payload[offset : offset + 2], "big")
-                    offset += 2
-                    if offset + id_len <= len(payload):
-                        id_bytes = payload[offset : offset + id_len]
-                        id_type_str, ident = NASParser._extract_identity_from_mobile_id(id_bytes)
-                        if ident:
-                            if id_type_str == "IMSI":
-                                extracted["imsi"] = ident
-                            elif id_type_str == "IMEI":
-                                extracted["imei"] = ident
-                        offset += id_len
-
-            # Identity Response (0x5B)
-            elif msg_type == 0x5B and offset + 2 <= len(payload):
-                id_len = int.from_bytes(payload[offset : offset + 2], "big")
-                offset += 2
-                if offset + id_len <= len(payload):
-                    id_bytes = payload[offset : offset + id_len]
-                    id_type_str, ident = NASParser._extract_identity_from_mobile_id(id_bytes)
-                    if ident:
-                        if id_type_str == "IMSI":
-                            extracted["imsi"] = ident
-                        elif id_type_str == "IMEI":
-                            extracted["imei"] = ident
-                        else:
-                            # Fallback based on length
-                            if len(ident) == 15 and ident.startswith(("86", "35")):
-                                extracted["imei"] = ident
-                            else:
-                                extracted["imsi"] = ident
-
-            # Security Mode Complete (0x56) - Often carries IMEISV
-            elif msg_type == 0x56:
-                imei_cand = NASParser._scan_for_imei(payload)
-                if imei_cand:
-                    extracted["imei"] = imei_cand
-
-            # PDU Session Establishment Request (0xC1) - Contains S-NSSAI
-            elif msg_type == 0xC1:
-                sst, sd = NASParser._scan_for_snssai(payload)
-                extracted["sst"] = sst
-                extracted["sd"] = sd
-
-            # Global scan for IMEI / IMEISV if not yet found
-            if extracted["imei"] is None:
-                imei_cand = NASParser._scan_for_imei(payload)
-                if imei_cand:
-                    extracted["imei"] = imei_cand
-
+            NASParser._parse_nas_message(payload, extracted, depth=0)
+            NASParser._scan_embedded_messages(payload, extracted)
         except Exception as err:
             logger.debug(f"Raw NAS parse error: {err}")
-
         return extracted
+
+    # Message types worth looking for inside a payload that concatenates NAS messages.
+    _EMBEDDED_5GMM_TYPES = (0x41, 0x5C, 0x5E, 0x67)
+
+    @staticmethod
+    def _scan_embedded_messages(payload: bytes, extracted: dict[str, Any]) -> None:
+        found = 0
+        for idx in range(1, len(payload) - 2):
+            if (
+                payload[idx] == 0x7E
+                and payload[idx + 1] == 0x00
+                and payload[idx + 2] in NASParser._EMBEDDED_5GMM_TYPES
+            ):
+                sub = NASParser._blank()
+                NASParser._parse_nas_message(payload[idx:], sub, depth=1)
+                for key in ("imsi", "imei", "sst", "sd"):
+                    if extracted[key] is None and sub[key] is not None:
+                        extracted[key] = sub[key]
+                if sub["suci_concealed"] and not extracted["suci_concealed"]:
+                    extracted["suci_concealed"] = True
+                    extracted["suci_scheme"] = sub["suci_scheme"]
+                if not extracted["requested_slices"] and sub["requested_slices"]:
+                    extracted["requested_slices"] = sub["requested_slices"]
+                found += 1
+                if found >= 8:
+                    return
+
+    @staticmethod
+    def _parse_nas_message(payload: bytes, extracted: dict[str, Any], depth: int) -> None:
+        if len(payload) < 3 or depth > 2:
+            return
+        epd = payload[0]
+
+        if epd == 0x7E:  # 5GMM
+            sec_header = payload[1] & 0x0F
+            if sec_header != 0:
+                # Security protected: EPD | SHT | MAC (4) | SQN (1) | inner NAS message
+                if len(payload) >= 10:
+                    NASParser._parse_nas_message(payload[7:], extracted, depth + 1)
+                return
+            msg_type = payload[2]
+            body = payload[3:]
+            if extracted["msg_type_name"] is None:
+                extracted["msg_type_name"] = NAS_5GS_MSG_TYPES.get(
+                    msg_type, f"Unknown_0x{msg_type:02x}"
+                )
+            if msg_type == 0x41:  # Registration Request
+                extracted["requested_slices"] = NASParser._scan_requested_nssai(payload)
+                # octet: 5GS registration type + ngKSI, then 5GS mobile identity (LV-E)
+                if len(body) >= 3:
+                    id_len = int.from_bytes(body[1:3], "big")
+                    if 3 + id_len <= len(body):
+                        NASParser._apply_mobile_identity(extracted, body[3 : 3 + id_len])
+            elif msg_type == 0x5C:  # Identity Response: 5GS mobile identity (LV-E)
+                if len(body) >= 2:
+                    id_len = int.from_bytes(body[0:2], "big")
+                    if 2 + id_len <= len(body):
+                        NASParser._apply_mobile_identity(extracted, body[2 : 2 + id_len])
+            elif msg_type == 0x5E:  # Security Mode Complete: optional IMEISV (IEI 0x77, TLV-E)
+                if len(body) >= 3 and body[0] == 0x77:
+                    id_len = int.from_bytes(body[1:3], "big")
+                    if 3 + id_len <= len(body):
+                        NASParser._apply_mobile_identity(extracted, body[3 : 3 + id_len])
+            elif msg_type == 0x67:  # UL NAS Transport: carries the S-NSSAI of a PDU session
+                NASParser._parse_ul_nas_transport(body, extracted)
+
+        elif epd == 0x2E:  # 5GSM: EPD | PDU session ID | PTI | message type
+            if len(payload) < 4:
+                return
+            msg_type = payload[3]
+            if extracted["msg_type_name"] is None:
+                extracted["msg_type_name"] = NAS_5GSM_MSG_TYPES.get(
+                    msg_type, f"Unknown_0x{msg_type:02x}"
+                )
+
+    @staticmethod
+    def _parse_ul_nas_transport(body: bytes, extracted: dict[str, Any]) -> None:
+        """Walk UL NAS Transport (TS 24.501 8.2.10) and pull out the S-NSSAI IE (0x22)."""
+        if len(body) < 3:
+            return
+        # octet 1: payload container type (spare nibble | type); then payload container (LV-E)
+        container_len = int.from_bytes(body[1:3], "big")
+        off = 3 + container_len
+        while off < len(body):
+            iei = body[off]
+            if iei >= 0x80:  # type 1 (half-octet) IE
+                off += 1
+            elif iei in (0x12, 0x59):  # PDU session ID / old PDU session ID (TV, 2 octets)
+                off += 2
+            else:  # TLV
+                if off + 2 > len(body):
+                    return
+                length = body[off + 1]
+                if off + 2 + length > len(body):
+                    return
+                if iei == 0x22 and length in (1, 2, 4, 5, 8):
+                    value = body[off + 2 : off + 2 + length]
+                    sst = value[0]
+                    sd = value[1:4].hex().upper() if length in (4, 5, 8) else None
+                    extracted["sst"] = sst
+                    extracted["sd"] = sd
+                    extracted["requested_slices"] = [{"sst": sst, "sd": sd}]
+                    return
+                off += 2 + length
 
     @staticmethod
     def _scan_requested_nssai(payload: bytes) -> list[dict[str, int | str | None]]:
@@ -270,85 +335,86 @@ class NASParser:
         return results
 
     @staticmethod
-    def _extract_identity_from_mobile_id(data: bytes) -> tuple[str | None, str | None]:
+    def _decode_plmn(data: bytes) -> tuple[str, str] | None:
+        """Decode the 3-octet PLMN (MCC/MNC) used in a SUCI (TS 24.501 / TS 23.003).
+
+        Octet 1: MCC digit 2 | MCC digit 1
+        Octet 2: MNC digit 3 | MCC digit 3   (MNC digit 3 == 0xF for 2-digit MNCs)
+        Octet 3: MNC digit 2 | MNC digit 1
         """
-        Extract identity type ('IMSI', 'IMEI', 'GUTI') and numeric value from 5GS Mobile Identity bytes.
+        if len(data) < 3:
+            return None
+        mcc = f"{data[0] & 0x0F:x}{data[0] >> 4:x}{data[1] & 0x0F:x}"
+        mnc = f"{data[2] & 0x0F:x}{data[2] >> 4:x}"
+        if (data[1] >> 4) != 0x0F:
+            mnc += f"{data[1] >> 4:x}"
+        if not (mcc.isdigit() and mnc.isdigit()):
+            return None
+        return mcc, mnc
+
+    @staticmethod
+    def _bcd_low_first(data: bytes) -> str:
+        """Decode TBCD (low nibble first), dropping 0xF filler nibbles."""
+        digits: list[str] = []
+        for byte in data:
+            for nibble in (byte & 0x0F, byte >> 4):
+                if nibble != 0x0F:
+                    digits.append(f"{nibble:x}")
+        return "".join(digits)
+
+    @staticmethod
+    def _extract_identity_from_mobile_id(data: bytes) -> tuple[str | None, str | int | None]:
+        """
+        Decode a 5GS Mobile Identity value (TS 24.501 section 9.11.3.4).
+
+        Returns one of:
+          ("IMSI", "<mcc><mnc><msin>")   SUCI with the null protection scheme
+          ("SUCI_CONCEALED", <scheme>)   SUCI whose MSIN is encrypted (scheme != 0);
+                                         the subscriber identity is NOT recoverable
+          ("IMEI", "<15 digits>")        PEI carrying an IMEI
+          ("IMEI", "<16 digits>")        PEI carrying an IMEISV (callers truncate)
+          (None, None)                   unsupported or malformed
         """
         if not data:
             return None, None
-        # Type of identity (lowest 3 bits of byte 0)
-        # 1: SUCI/SUPI (IMSI), 2: 5G-GUTI, 3: IMEI, 4: 5G-S-TMSI, 5: IMEISV
         id_type = data[0] & 0x07
-        hex_str = binascii.hexlify(data).decode("ascii")
 
-        if id_type == 1:
-            # SUCI / IMSI: If length >= 6, routing indicator (2B) + protection (1B) + PKI (1B) = 4B. MSIN starts at byte 5 (hex idx 10)
-            start_idx = 10 if len(data) >= 6 else 2
-            digits = []
-            for i in range(start_idx, len(hex_str) - 1, 2):
-                low = hex_str[i + 1]
-                high = hex_str[i]
-                digits.append(low)
-                if high.lower() != "f":
-                    digits.append(high)
-            cand = "".join(digits)
-            clean = re.sub(r"\D", "", cand)
-            if len(clean) >= 10:
-                return "IMSI", clean
+        if id_type == 1:  # SUCI
+            # Octet 1 bits 5-7: SUPI format (0 = IMSI, 1 = network-specific identifier).
+            if (data[0] >> 4) & 0x07 != 0:
+                return None, None
+            # Octets: 1 type | 2-4 PLMN | 5-6 routing indicator | 7 scheme | 8 home-network PKI | 9+ output
+            if len(data) < 9:
+                return None, None
+            scheme = data[6] & 0x0F
+            if scheme != 0:
+                return "SUCI_CONCEALED", scheme
+            plmn = NASParser._decode_plmn(data[1:4])
+            if plmn is None:
+                return None, None
+            msin = NASParser._bcd_low_first(data[8:])
+            imsi = plmn[0] + plmn[1] + msin
+            if not imsi.isdigit() or not (6 <= len(imsi) <= 15):
+                return None, None
+            return "IMSI", imsi
 
-        elif id_type in (3, 5):
-            # IMEI / IMEISV: Starts at byte index 1 (hex idx 2)
-            digits = []
-            for i in range(2, len(hex_str) - 1, 2):
-                low = hex_str[i + 1]
-                high = hex_str[i]
-                digits.append(low)
-                if high.lower() != "f":
-                    digits.append(high)
-            cand = "".join(digits)
-            clean = re.sub(r"\D", "", cand)
-            if len(clean) >= 14:
-                return "IMEI", clean[:15]
+        if id_type in (3, 5):  # IMEI / IMEISV
+            # First digit sits in the HIGH nibble of octet 1; remaining digits are
+            # TBCD (low nibble first) in the following octets. Odd/even is bit 4.
+            digits = f"{data[0] >> 4:x}" + NASParser._bcd_low_first(data[1:])
+            if digits.isdigit() and len(digits) in (15, 16):
+                return "IMEI", digits[:15]
 
         return None, None
 
     @staticmethod
-    def _scan_for_imei(payload: bytes) -> str | None:
-        """Scans packet bytes for an explicit IMEISV IE (0x77 or 0x5C) sequence."""
-        hex_data = binascii.hexlify(payload).decode("ascii")
-        for i in range(len(payload) - 8):
-            # Look for IE 0x77 (IMEISV) or 0x5C
-            if payload[i] in (0x77, 0x5C) and i + 9 <= len(payload):
-                ie_len = payload[i + 1]
-                if 8 <= ie_len <= 10:
-                    imei_bcd = hex_data[(i + 2) * 2 : (i + 2 + ie_len) * 2]
-                    decoded = decode_bcd_digits(imei_bcd, 16)
-                    clean = re.sub(r"\D", "", decoded)
-                    if len(clean) >= 14:
-                        return clean[:15]
-
-        return None
-
-    @staticmethod
-    def _scan_for_snssai(payload: bytes) -> tuple[int | None, str | None]:
-        """
-        Scan for S-NSSAI IE (Single Network Slice Selection Assistance Information).
-        3GPP TS 24.501: Length is 1 to 4 bytes:
-        [SST (1 byte)] + [Optional SD (3 bytes)]
-        """
-        hex_data = binascii.hexlify(payload).decode("ascii")
-        # Common IE markers for NSSAI: 0x2f (NSSAI), 0x22 (S-NSSAI)
-        for i in range(len(payload) - 4):
-            # Look for S-NSSAI IE: Length byte = 4 (SST + 3 octets SD)
-            if payload[i] == 0x22 and i + 5 <= len(payload):
-                ie_len = payload[i + 1]
-                if ie_len == 4:
-                    sst = payload[i + 2]
-                    sd = hex_data[(i + 3) * 2 : (i + 6) * 2].upper()
-                    return sst, sd
-                elif ie_len == 1:
-                    sst = payload[i + 2]
-                    return sst, None
-
-        # Check for standard SST values (1=eMBB, 2=URLLC, 3=MIoT, 4=Enterprise)
-        return None, None
+    def _apply_mobile_identity(extracted: dict[str, Any], id_bytes: bytes) -> None:
+        """Decode a 5GS Mobile Identity and store the result in ``extracted``."""
+        id_type, value = NASParser._extract_identity_from_mobile_id(id_bytes)
+        if id_type == "IMSI":
+            extracted["imsi"] = value
+        elif id_type == "IMEI":
+            extracted["imei"] = value
+        elif id_type == "SUCI_CONCEALED":
+            extracted["suci_concealed"] = True
+            extracted["suci_scheme"] = value

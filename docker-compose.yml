@@ -13,6 +13,10 @@ services:
       HOME: /tmp
       NASWATCH_ENV: development
       NASWATCH_JWT_SECRET: ${NASWATCH_JWT_SECRET:-}
+      NASWATCH_AUDIT_KEY: ${NASWATCH_AUDIT_KEY:-}
+      NASWATCH_METRICS_TOKEN: ${NASWATCH_METRICS_TOKEN:-}
+      NASWATCH_LICENSE_KEY: ${NASWATCH_LICENSE_KEY:-}
+      NASWATCH_LICENSE_SECRET: ${NASWATCH_LICENSE_SECRET:-}
       NASWATCH_DB_PATH: /app/data/inventory.db
       NASWATCH_DB_URL: postgresql://naswatch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/naswatch
       NASWATCH_CORS_ORIGINS: ${NASWATCH_CORS_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
@@ -89,6 +93,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/secrets/metrics_token:/etc/prometheus/metrics_token:ro
       - naswatch-prometheus-data:/prometheus
     restart: unless-stopped
 

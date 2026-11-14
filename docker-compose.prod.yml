@@ -40,6 +40,9 @@ services:
       - NASWATCH_DB_PATH=/app/data/inventory.db
       - NASWATCH_JWT_SECRET=${NASWATCH_JWT_SECRET:?Set NASWATCH_JWT_SECRET in .env}
       - NASWATCH_LICENSE_KEY=${NASWATCH_LICENSE_KEY:-}
+      - NASWATCH_LICENSE_SECRET=${NASWATCH_LICENSE_SECRET:-}
+      - NASWATCH_AUDIT_KEY=${NASWATCH_AUDIT_KEY:-}
+      - NASWATCH_METRICS_TOKEN=${NASWATCH_METRICS_TOKEN:?Set NASWATCH_METRICS_TOKEN in .env (Prometheus scrape token)}
       - NASWATCH_ADMIN_EMAIL=${NASWATCH_ADMIN_EMAIL:-admin@naswatch.io}
       - NASWATCH_ADMIN_PASSWORD=${NASWATCH_ADMIN_PASSWORD:-}
       - NASWATCH_ENV=production
@@ -108,6 +111,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/secrets/metrics_token:/etc/prometheus/metrics_token:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"

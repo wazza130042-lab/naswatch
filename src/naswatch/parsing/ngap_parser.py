@@ -39,6 +39,18 @@ class NGAPParser:
     """Dissects NGAP packets and encapsulated NAS PDUs into normalized ParsedSignalingEvents."""
 
     @staticmethod
+    def _note_concealed_suci(event: ParsedSignalingEvent, nas_data: dict[str, Any]) -> None:
+        """Record that the UE used a protected SUCI, so no subscriber identity is available.
+
+        Without this marker the event would be indistinguishable from "no identity seen", and
+        analysts could not tell that SUCI concealment (working as designed) is why IMSI-based
+        rules cannot evaluate this registration.
+        """
+        if nas_data.get("suci_concealed"):
+            event.metadata["suci_concealed"] = True
+            event.metadata["suci_scheme"] = nas_data.get("suci_scheme")
+
+    @staticmethod
     def parse_pyshark_packet(packet: Any) -> ParsedSignalingEvent | None:
         """
         Parse a PyShark Packet containing NGAP/NAS signaling.
@@ -156,6 +168,7 @@ class NGAPParser:
                 try:
                     raw_nas_bytes = bytes.fromhex(nas_hex)
                     raw_nas_data = NASParser.parse_raw_nas(raw_nas_bytes)
+                    NGAPParser._note_concealed_suci(event, raw_nas_data)
                     if not event.imsi and raw_nas_data.get("imsi"):
                         event.imsi = raw_nas_data["imsi"]
                     if not event.imei and raw_nas_data.get("imei"):
@@ -257,10 +270,13 @@ class NGAPParser:
                     pass
 
             nas_pdu = first("ngap.NAS_PDU")
+            raw_nas_imsi: str | None = None
             if nas_pdu:
                 try:
                     nas_bytes = bytes.fromhex(nas_pdu.replace(":", ""))
                     nas_data = NASParser.parse_raw_nas(nas_bytes)
+                    raw_nas_imsi = nas_data.get("imsi")
+                    NGAPParser._note_concealed_suci(event, nas_data)
                     event.raw_payload_hex = nas_bytes.hex()
                     if nas_data.get("msg_type_name") and not event.procedure_name:
                         event.procedure_name = nas_data["msg_type_name"]
@@ -283,6 +299,8 @@ class NGAPParser:
             msin = first("nas-5gs.mm.suci.msin")
             if mcc and mnc and msin:
                 event.imsi = f"{mcc}{mnc}{msin}"
+            elif raw_nas_imsi and not event.imsi:
+                event.imsi = raw_nas_imsi
 
             sst = last("nas-5gs.mm.sst")
             if sst is None and event.procedure_code in (26, 29):
@@ -330,8 +348,15 @@ class NGAPParser:
                     dst_ip = pkt["IPv6"].dst
 
             raw_bytes = bytes(pkt)
+            # Use the capture timestamp when Scapy provides one; wall-clock time would make
+            # offline replays look like they happened "now" and distort rate-based rules.
+            pkt_time = datetime.now(UTC)
+            try:
+                pkt_time = datetime.fromtimestamp(float(pkt.time), tz=UTC)
+            except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+                pass
             event = ParsedSignalingEvent(
-                timestamp=datetime.now(UTC),
+                timestamp=pkt_time,
                 packet_num=packet_num,
                 source_ip=src_ip,
                 dest_ip=dst_ip,
@@ -344,6 +369,7 @@ class NGAPParser:
                     idx = raw_bytes.find(marker)
                     nas_bytes = raw_bytes[idx:]
                     nas_data = NASParser.parse_raw_nas(nas_bytes)
+                    NGAPParser._note_concealed_suci(event, nas_data)
                     if not event.imsi and nas_data.get("imsi"):
                         event.imsi = nas_data["imsi"]
                     if not event.imei and nas_data.get("imei"):
@@ -356,9 +382,11 @@ class NGAPParser:
                     if not event.procedure_name and nas_data.get("msg_type_name"):
                         event.procedure_name = nas_data["msg_type_name"]
 
-            # Default cell ID if present in metadata/bytes
-            event.cell_id = "0x000000010"
-            event.tac = 1
+            # This fallback sees raw bytes only: it cannot decode NGAP, so the serving cell and
+            # TAC are genuinely unknown. They are left unset (previously hard-coded to an
+            # *authorized* cell, which silently disabled the false-base-station rule here).
+            event.metadata["parser"] = "scapy-fallback"
+            event.metadata["cell_unknown"] = True
 
             return event
         except Exception as err:

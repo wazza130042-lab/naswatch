@@ -1,6 +1,7 @@
 """
 JWT token creation and validation for NASWatch enterprise API.
-HS256 signed tokens with configurable expiry using PyJWT and bcrypt/hashlib.
+HS256 signed tokens with configurable expiry using PyJWT (a declared, required dependency)
+and bcrypt/hashlib.
 """
 from __future__ import annotations
 
@@ -11,13 +12,8 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
+import jwt
 from fastapi import HTTPException, status
-
-try:
-    import jwt
-    _HAS_PYJWT = True
-except ImportError:
-    _HAS_PYJWT = False
 
 try:
     from passlib.context import CryptContext
@@ -35,6 +31,8 @@ _PLACEHOLDER_SECRETS = {
 _PRODUCTION = os.environ.get("NASWATCH_ENV", "development").lower() == "production"
 if len(_CONFIGURED_SECRET.encode("utf-8")) >= 32 and _CONFIGURED_SECRET not in _PLACEHOLDER_SECRETS:
     SECRET_KEY: str = _CONFIGURED_SECRET
+    # True when the key is a stable, operator-supplied secret (survives restarts).
+    SECRET_IS_CONFIGURED: bool = True
 elif _PRODUCTION:
     raise RuntimeError(
         "Production requires NASWATCH_JWT_SECRET with at least 32 non-placeholder bytes. "
@@ -47,6 +45,7 @@ else:
     import logging
 
     SECRET_KEY = secrets.token_urlsafe(48)
+    SECRET_IS_CONFIGURED = False
     logging.getLogger("naswatch.auth").warning(
         "NASWATCH_JWT_SECRET is missing or weak; using a temporary process key. "
         "Set a stable random secret to preserve sessions across restarts."
@@ -106,17 +105,8 @@ def _jwt_claims(
 
 
 def _encode(payload: dict) -> str:
-    """Encode a payload as a JWT (PyJWT when available, pure-Python fallback otherwise)."""
-    if _HAS_PYJWT:
-        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    import base64
-    import json
-
-    header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, default=str).encode()).decode().rstrip("=")
-    sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
-    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
-    return f"{header_b64}.{payload_b64}.{sig_b64}"
+    """Encode a payload as an HS256 JWT."""
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def create_access_token(
@@ -131,11 +121,6 @@ def create_access_token(
     expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     payload = _jwt_claims(subject, role, org_id, "access", user_id, None, auth_method)
     payload["exp"] = expire
-    if _HAS_PYJWT:
-        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-    payload["exp"] = int(expire.timestamp())
-    payload["iat"] = int(payload["iat"].timestamp())
     return _encode(payload)
 
 
@@ -151,36 +136,18 @@ def create_refresh_token(
     jti = secrets.token_urlsafe(32)
     payload = _jwt_claims(subject, role, org_id, "refresh", user_id, jti, auth_method)
     payload["exp"] = expire
-    if _HAS_PYJWT:
-        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-    payload["exp"] = int(expire.timestamp())
-    payload["iat"] = int(payload["iat"].timestamp())
     return _encode(payload)
 
 
 def decode_token(token: str) -> dict:
     """Decode and validate a JWT token. Raises HTTP 401 on failure."""
     try:
-        if _HAS_PYJWT:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            return payload
-        import base64
-        import json
-        parts = token.split(".")
-        if len(parts) != 3:
-            raise ValueError("Malformed token")
-        header_b64, payload_b64, sig_b64 = parts
-        sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
-        pad = "=" * ((4 - len(sig_b64) % 4) % 4)
-        expected_sig = base64.urlsafe_b64decode(sig_b64 + pad)
-        if not hmac.compare_digest(sig, expected_sig):
-            raise ValueError("Signature mismatch")
-        payload_pad = "=" * ((4 - len(payload_b64) % 4) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + payload_pad))
-        if payload.get("exp") and datetime.now(UTC).timestamp() > payload["exp"]:
-            raise ValueError("Token expired")
-        return payload
+        return jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"require": ["exp", "sub"]},
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

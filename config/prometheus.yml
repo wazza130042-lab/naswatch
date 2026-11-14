@@ -5,5 +5,10 @@ global:
 scrape_configs:
   - job_name: 'naswatch-ids'
     metrics_path: '/metrics'
+    # /metrics requires a bearer token (NASWATCH_METRICS_TOKEN on the API side).
+    # Create the file once:  mkdir -p config/secrets && printf %s "$NASWATCH_METRICS_TOKEN" > config/secrets/metrics_token
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token
     static_configs:
       - targets: ['naswatch-api:8000']

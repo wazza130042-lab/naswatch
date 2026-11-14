@@ -52,3 +52,9 @@ data/pcaps/*.pcap
 .coverage
 htmlcov/
 .ruff_cache/
+
+# Development audit-chain key (never commit)
+data/.audit_key
+
+# Local secrets (Prometheus scrape token etc.)
+config/secrets/
