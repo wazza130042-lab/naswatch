@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        experimental: [false]
+        include:
+          # 3.13 may fail without blocking until every dependency ships wheels for it.
+          - python-version: "3.13"
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Non-blocking until the existing lint findings are cleaned up. Remove
+      # `continue-on-error` once `ruff check src tests` passes locally.
+      - name: Lint (ruff)
+        continue-on-error: true
+        run: ruff check src tests
+
+      - name: Tests with coverage
+        run: pytest -v --cov=naswatch --cov-report=term-missing --cov-report=xml tests/unit
+
+      - name: Detection evaluation (shown in the run summary)
+        if: matrix.python-version == '3.12'
+        run: python scripts/evaluate_detection.py --n 20 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
