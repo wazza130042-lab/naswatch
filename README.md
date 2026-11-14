@@ -1,4 +1,4 @@
-# 🛡️ NASWatch: Rogue eSIM & 5G Network-Slice Intrusion Detector
+# 🛡️ NASWatch: Rogue eSIM & 5G Network-Slice Intrusion DetectoR
 ### Commercial Enterprise Grade 5G Control-Plane Threat Detection & Response Platform
 
 [![CI Pipeline](https://github.com/megbaru/naswatch/actions/workflows/ci.yaml/badge.svg)](https://github.com/megbaru/naswatch/actions)
